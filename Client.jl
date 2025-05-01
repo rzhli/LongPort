@@ -5,85 +5,43 @@ module Client
     using HTTP: WebSockets, WebSockets.WebSocket
     export WSClient, connect, send_packet, receive_packet
 
-    mutable struct WsSession
-        session_id::String
-        deadline::DateTime
-    end
-    
-    function is_expired(session::WsSession)
-        return now() >= session.deadline
-    end
-
     # WebSocket客户端
     mutable struct WSClient
         ws::WebSocket
         next_seq_id::UInt32
         recv_chan::Channel{Vector{UInt8}}
         inflight::Dict{UInt32, Channel{Any}}  # 存储每个 seq_id 对应的 response channel
-        event_sender::Channel{WsEvent}
-        rate_limiter::Dict{Int, Any}  # 可选：用于限流
+        rate_limiter::Dict{Int, Any}  # 用于限流
     end
 
-    function handle_incoming_packets(client::WSClient)
-        @spawn begin
-            while isopen(client.recv_chan)
-                try
-                    cmd, seq_id, body = Client.receive_packet(client)
-    
-                    if haskey(client.inflight, seq_id)
-                        ch = client.inflight[seq_id]
-                        put!(ch, (cmd, body))
-                        delete!(client.inflight, seq_id)
-                    else
-                        # 处理事件或其他类型的消息
-                        # put! 到 event_sender
-                    end
-                catch e
-                    @error "Error handling incoming packet" exception=(e, catch_backtrace())
-                    break
-                end
-            end
-        end
-    end
     """
     connect(url::String) -> WSClient
-    建立 WebSocket 并传递 query parameters (version, codec, platform)，支持认证与事件通道。
     """
-    function connect(
-        ws_url::String,
-        version::Int = 1,
-        codec::String = "protobuf",
-        platform::Int = 9,
-        timeout_ms::Int = 5000
-        )::WSClient
+    function connect(ws_url::String)::WSClient
+        
+        recv_chan = Channel{Vector{UInt8}}(64)
+        inflight = Dict{UInt32, Channel{Any}}()
+        rate_limiter = Dict{Int, Any}()
+    
+        ws_ref = Ref{WebSocket}()
+        client_ref = Ref{WSClient}()
 
-        client[] = WSClient(ws, UInt32(0), recv_chan, Dict(), Channel{WsEvent}(16), Dict())
-        try
-            WebSockets.open(ws_url) do ws
-                recv_chan = Channel{Vector{UInt8}}(64)
-                # 启动异步接收消息的任务
-                @spawn begin
-                    try
-                        for msg in ws
-                            if msg isa Vector{UInt8}
-                                put!(recv_chan, msg)
-                            else
-                                @warn "Received unexpected non-binary message" typeof(msg)
-                            end
-                        end
-                    catch e
-                        @error "WebSocket receive loop error" exception=(e, catch_backtrace())
-                        close(recv_chan)
-                    end
-                end
-                @info "WebSocket connected to $ws_url"
-                client[] = WSClient(ws, UInt32(0), recv_chan)
-            end
-        catch e
-            @error "Failed to connect to $ws_url" exception=(e, catch_backtrace())
-            rethrow()
+        # 连接 WebSocket 并初始化结构体
+        WebSockets.open(ws_url) do ws
+            ws_ref[] = ws
+            client = WSClient(ws, UInt32(1), recv_chan, inflight, rate_limiter)
+            client_ref[] = client
+
+            @info "WebSocket connected to $ws_url"
+
+            # 启动接收消息协程
+            @async listen_forever(client)
+            
+            # 主线程阻塞交还控制权
+            wait(Condition())  # 可替换为更合理的调度模型
         end
-        return client[]
+
+        return client_ref[]
     end
 
 
