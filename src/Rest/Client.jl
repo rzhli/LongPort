@@ -6,7 +6,6 @@ using Dates
 using Base.Threads
 
 using ..Constant
-using ..Protocol
 using ..ControlPB
 
 export WSClient, connect, disconnect!, send_packet, is_connected, 
