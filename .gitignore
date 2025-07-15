@@ -1,0 +1,27 @@
+# Julia
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+deps/deps.jl
+docs/build/
+docs/site/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Configuration files with sensitive data
+config.toml
+*.env
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*~
