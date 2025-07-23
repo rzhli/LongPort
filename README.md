@@ -62,8 +62,11 @@ Pkg.add(url="https://github.com/your-repo/Longport.jl")
 ```julia
 using Longport
 
-# 从配置文件创建客户端
-client = LongportClient(joinpath(@__DIR__, "config.toml"))
+# 使用默认配置文件创建客户端 (自动找到 src/config.toml)
+client = LongportClient()
+
+# 或者指定配置文件路径
+# client = LongportClient("path/to/config.toml")
 
 # 连接并认证
 connect!(client)
@@ -109,7 +112,8 @@ push_candlestick_mode = "Realtime"
 - `refresh_access_token!()` - 刷新访问令牌
 
 ### 客户端管理
-- `LongportClient()` - 创建客户端
+- `LongportClient()` - 使用默认配置文件创建客户端 (自动找到 src/config.toml)
+- `LongportClient(config_path)` - 从指定路径创建客户端
 - `connect!()` - 连接到服务器
 - `disconnect!()` - 断开连接
 - `is_connected()` - 检查连接状态
@@ -132,6 +136,7 @@ push_candlestick_mode = "Realtime"
 ### 实时推送
 - `subscribe_quotes()` - 订阅行情推送
 - `unsubscribe_quotes()` - 取消订阅
+- 支持多种订阅类型：基础行情、深度行情、经纪商队列、逐笔交易
 
 ### HTTP 请求
 - `get_request()` - 发送 GET 请求
