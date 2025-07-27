@@ -1,6 +1,6 @@
 # Longport Julia SDK
 
-Longport Julia SDK 是一个用于访问 Longport 金融数据和交易服务的 Julia 客户端库。
+Longport Julia SDK 是一个用于访问 Longport 金融数据和交易服务的 Julia 客户端库
 
 ### 配置文件
 
@@ -18,7 +18,7 @@ token_expire_time = 2025-07-22T00:00:00Z  # ISO8601格式，UTC时间
 
 # 可选项（不填使用默认）
 language = "zh_CN"
-enable_overnight = true
+enable_overnight = false    # 需要订阅美股LV1实时行情
 push_candlestick_mode = "Realtime"
 ```
 
