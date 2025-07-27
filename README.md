@@ -1,52 +1,25 @@
 # Longport Julia SDK
 
-长桥 Julia SDK，提供统一的接口访问长桥 HTTP API 和 WebSocket 服务。
+Longport Julia SDK 是一个用于访问 Longport 金融数据和交易服务的 Julia 客户端库，基于全新的 Actor 架构设计。
 
-## 项目结构
+## 功能特性
 
-```
-Longport.jl/
-├── Project.toml               # Julia 项目配置
-├── Manifest.toml             # 依赖锁定文件
-├── LICENSE                   # MIT 许可证
-├── README.md                 # 项目文档
-├── src/                      # 源代码目录
-│   ├── Longport.jl           # 主模块文件
-│   ├── config.toml           # API 配置文件
-│   ├── Core/                 # 核心模块
-│   │   ├── ControlPB.jl      # Protocol Buffer 控制协议
-│   │   ├── Constant.jl       # 常量定义
-│   │   ├── Config.jl         # 配置管理
-│   │   ├── Region.jl         # 区域设置
-│   │   ├── Quotes.jl         # 行情业务逻辑
-│   │   ├── MarketData.jl     # 市场数据
-│   │   └── Trading.jl        # 交易业务逻辑
-│   └── Rest/                 # REST API
-│       ├── Auth.jl           # 认证模块
-│       ├── Client.jl         # WebSocket 客户端
-│       └── API.jl            # HTTP API 接口
-└── examples/                 # 示例代码
-    ├── authentication.jl     # 认证示例
-    ├── comprehensive_example.jl # 综合示例
-    ├── get_quotes.jl         # 获取行情示例
-    └── place_order.jl        # 下单示例
-```
+### 行情服务
+- 获取标的基础信息
+- 获取股票实时行情
+- 获取期权实时行情
+- 获取轮证实时行情
+- 获取标的盘口数据
+- 获取经纪队列信息
+- 获取券商席位信息
+- K线数据获取
+- 实时行情订阅与推送
 
-## 模块架构
-
-### Core 模块
-- **ControlPB.jl**: Protocol Buffer 控制协议定义（WebSocket 认证、心跳等）
-- **Constant.jl**: API 端点、命令码、默认设置等常量定义
-- **Config.jl**: 配置结构体和加载逻辑（API 密钥、URL 等）
-- **Region.jl**: 区域和语言设置，根据位置判断API端点
-- **Quotes.jl**: 行情业务逻辑封装，如拉取快照报价、订阅实时推送
-- **MarketData.jl**: 市场数据相关接口
-- **Trading.jl**: 交易相关业务逻辑
-
-### Rest 模块
-- **Auth.jl**: 处理认证端点逻辑（获取 OTP token）
-- **Client.jl**: WebSocket 客户端设置，连接管理
-- **API.jl**: 统一封装 HTTP 接口的主入口
+### 技术特性
+- **Actor-based API**: 基于现代 Actor 模型的全新架构
+- **实时推送**: 支持多种类型的实时行情数据推送
+- **多市场支持**: 支持美股、港股等多个市场
+- **高效传输**: 使用 Protocol Buffers 进行高效的二进制数据传输
 
 ## 快速开始
 
@@ -54,7 +27,7 @@ Longport.jl/
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/your-repo/Longport.jl")
+Pkg.add("Longport")
 ```
 
 ### 基本使用
@@ -62,26 +35,53 @@ Pkg.add(url="https://github.com/your-repo/Longport.jl")
 ```julia
 using Longport
 
-# 使用默认配置文件创建客户端 (自动找到 src/config.toml)
-client = LongportClient()
+# 从 TOML 配置文件加载配置
+cfg = Config.from_toml()
 
-# 或者指定配置文件路径
-# client = LongportClient("path/to/config.toml")
+# 异步创建并连接 QuoteContext
+ctx, channel = try_new(cfg)
 
-# 连接并认证
-connect!(client)
+# 获取标的基础信息
+resp = static_info(ctx, ["700.HK", "AAPL.US", "TSLA.US"])
 
-# 订阅行情
-subscribe_quotes(client, ["AAPL.US", "00700.HK"])
+# 获取标的实时行情
+quotes = realtime_quote(ctx, ["GOOGL.US", "AAPL.US", "TSLA.US"])
 
-# 获取股票静态信息
-info = get_static_info(client, ["AAPL.US"])
+# 获取期权实时行情
+resp = option_quote(ctx, ["AAPL230317P160000.US"])
 
-# 获取 K 线数据
-candlestick = get_candlestick(client, "AAPL.US", "Day", count=30)
+# 获取轮证实时行情 
+resp = warrant_quote(ctx, ["14993.HK", "66642.HK"])
+
+# 获取标的盘口
+resp = depth(ctx, "700.HK")
+
+# 获取K线数据
+candlesticks_data = candlesticks(ctx, "GOOGL.US", CandlePeriod.SIXTY_MINUTE, 365)
 
 # 断开连接
-disconnect!(client)
+disconnect!(ctx)
+```
+
+### 实时行情订阅
+
+```julia
+# 1. 定义回调函数
+function on_quote_callback(symbol::String, event::PushQuote)
+    println(symbol, event)
+end
+
+# 2. 设置回调
+set_on_quote(ctx, on_quote_callback)
+
+# 3. 订阅行情 (可选择不同类型: QUOTE, DEPTH, BROKERS, TRADE)
+subscribe(ctx, ["GOOGL.US"], [SubType.DEPTH]; is_first_push=true)
+
+# ... 等待推送 ...
+sleep(10)
+
+# 4. 取消订阅
+unsubscribe(ctx, ["GOOGL.US"], [SubType.QUOTE, SubType.DEPTH])
 ```
 
 ### 配置文件
@@ -104,43 +104,27 @@ enable_overnight = true
 push_candlestick_mode = "Realtime"
 ```
 
-## API 接口
+## API 概览
 
-### 配置管理
-- `APIConfig` - 配置结构体
-- `load_config()` - 加载配置文件
-- `refresh_access_token!()` - 刷新访问令牌
+### 上下文管理
+- `Config.from_toml()`: 从 `config.toml` 文件加载配置。
+- `try_new(config)`: 创建并连接 `QuoteContext`。
+- `disconnect!(ctx)`: 断开与服务器的连接。
 
-### 客户端管理
-- `LongportClient()` - 使用默认配置文件创建客户端 (自动找到 src/config.toml)
-- `LongportClient(config_path)` - 从指定路径创建客户端
-- `connect!()` - 连接到服务器
-- `disconnect!()` - 断开连接
-- `is_connected()` - 检查连接状态
+### 行情拉取
+- `static_info(ctx, symbols)`: 获取标的基础信息。
+- `realtime_quote(ctx, symbols)`: 获取股票实时行情。
+- `option_quote(ctx, symbols)`: 获取期权实时行情。
+- `warrant_quote(ctx, symbols)`: 获取轮证实时行情。
+- `depth(ctx, symbol)`: 获取标的盘口数据。
+- `brokers(ctx, symbol)`: 获取标的经纪队列。
+- `participants(ctx)`: 获取券商席位 ID 列表。
+- `candlesticks(ctx, symbol, period, count)`: 获取 K 线数据。
 
-### 认证相关
-- `get_OTP()` - 获取一次性密码
-- `create_auth_request()` - 创建认证请求
-
-### 行情相关
-- `get_static_info()` - 获取股票静态信息
-- `get_candlestick()` - 获取 K 线数据
-- `get_history_candlestick_by_date()` - 获取历史 K 线
-- `get_intraday()` - 获取分时数据
-- `get_option_chain_dates()` - 获取期权链到期日
-- `get_warrant_list()` - 获取窝轮列表
-- `get_capital_flow()` - 获取资金流向
-- `get_trading_session()` - 获取交易时段
-- `get_trading_days()` - 获取交易日历
-
-### 实时推送
-- `subscribe_quotes()` - 订阅行情推送
-- `unsubscribe_quotes()` - 取消订阅
-- 支持多种订阅类型：基础行情、深度行情、经纪商队列、逐笔交易
-
-### HTTP 请求
-- `get_request()` - 发送 GET 请求
-- `post_request()` - 发送 POST 请求
+### 实时行情订阅
+- `set_on_quote(ctx, callback)`: 设置行情推送的回调函数。
+- `subscribe(ctx, symbols, sub_types)`: 订阅行情。
+- `unsubscribe(ctx, symbols, sub_types)`: 取消订阅。
 
 ## 技术特性
 

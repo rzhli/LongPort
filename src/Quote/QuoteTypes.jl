@@ -21,49 +21,17 @@ using Dates
 using ProtoBuf.EnumX: @enumx
 using ..QuoteProtocol: CandlePeriod, TradeSession, TradeStatus
 
-export SecurityBoard,
-       PushCandestickMode, Candlestick, SecurityQuote, IntradayLine, QuoteTrade,
-       SecurityStaticInfo, SecurityDepth, Brokers, Depth, OrderBook,
+export PushCandestickMode, Candlestick, SecurityQuote, IntradayLine, QuoteTrade,
+       SecurityDepth, Brokers, Depth, OrderBook,
        SubscriptionResponse, PushDepth, PushBrokers, PushTrades,
        PushCandlestick, WarrantType, SortOrderType, WarrantSortBy, WarrantInfo,
        IssuerInfo, MarketTradingSession, MarketTradingDays, TradingSessionInfo,
-       RealtimeQuote, OptionQuote, OptionChainDateStrikeInfo,
-       StrikePriceInfo, IssuerInfoResponse, TradingHours
+       RealtimeQuote, OptionQuote, OptionChainDateStrikeInfo, StrikePriceInfo,
+       IssuerInfoResponse, TradingHours, WarrantQuote, ParticipantInfo
 
 # Enums
 
 # SubType and AdjustType are now imported from QuoteProtocol to avoid conflicts
-
-"""
-Security board
-"""
-@enumx SecurityBoard begin
-    UnknownBoard = 0
-    USMain = 1
-    USPink = 2
-    USDJI = 3
-    USNSDQ = 4
-    USSector = 5
-    USOption = 6
-    USOptionS = 7
-    HKEquity = 8
-    HKPreIPO = 9
-    HKWarrant = 10
-    HKCBBC = 11
-    HKSector = 12
-    SHMainConnect = 13
-    SHMainNonConnect = 14
-    SHSTAR = 15
-    CNIX = 16
-    CNSector = 17
-    SZMainConnect = 18
-    SZMainNonConnect = 19
-    SZGEMConnect = 20
-    SZGEMNonConnect = 21
-    SGMain = 22
-    STI = 23
-    SGSector = 24
-end
 
 """
 Warrant type
@@ -155,6 +123,7 @@ struct SecurityQuote
     trade_status::TradeStatus.T
     pre_market_quote::Union{RealtimeQuote, Nothing}
     post_market_quote::Union{RealtimeQuote, Nothing}
+    over_night_quote::Union{RealtimeQuote, Nothing}
 end
 
 """
@@ -178,28 +147,6 @@ struct QuoteTrade
     trade_type::String
     direction::Int32
     trade_session::TradeSession.T
-end
-
-"""
-Security static information
-"""
-struct SecurityStaticInfo
-    symbol::String
-    name_cn::String
-    name_en::String
-    name_hk::String
-    exchange::String
-    currency::String
-    lot_size::Int32
-    total_shares::Int64
-    circulating_shares::Int64
-    hk_shares::Union{Int64, Nothing}
-    eps::Union{Float64, Nothing}
-    eps_ttm::Union{Float64, Nothing}
-    bps::Union{Float64, Nothing}
-    dividend_yield::Union{Float64, Nothing}
-    stock_derivatives::Vector{Int32}
-    board::SecurityBoard.T
 end
 
 """
@@ -408,6 +355,44 @@ Trading hours
 struct TradingHours
     timezone::String
     trading_sessions::Vector{TradingSessionInfo}
+end
+
+"""
+Warrant quote
+"""
+struct WarrantQuote
+    symbol::String
+    last_done::Union{Float64, Nothing}
+    prev_close::Union{Float64, Nothing}
+    open::Union{Float64, Nothing}
+    high::Union{Float64, Nothing}
+    low::Union{Float64, Nothing}
+    timestamp::Union{DateTime, Nothing}
+    volume::Union{Int64, Nothing}
+    turnover::Union{Float64, Nothing}
+    trade_status::TradeStatus.T
+    implied_volatility::Union{Float64, Nothing}
+    expiry_date::Date
+    last_trade_date::Date
+    outstanding_ratio::Float64
+    outstanding_qty::Int64
+    conversion_ratio::Float64
+    category::String
+    strike_price::Float64
+    upper_strike_price::Float64
+    lower_strike_price::Float64
+    call_price::Float64
+    underlying_symbol::String
+end
+
+"""
+Participant information
+"""
+struct ParticipantInfo
+    broker_ids::Vector{Int64}
+    participant_name_cn::String
+    participant_name_en::String
+    participant_name_hk::String
 end
 
 end # module QuoteTypes

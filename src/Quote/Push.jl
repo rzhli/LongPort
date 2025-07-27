@@ -31,7 +31,7 @@ end
 Callback functions structure - matching Python SDK Callbacks
 """
 mutable struct Callbacks
-    get_quote::Union{Function, Nothing}
+    realtime_quote::Union{Function, Nothing}
     depth::Union{Function, Nothing}
     brokers::Union{Function, Nothing}
     trades::Union{Function, Nothing}
@@ -68,9 +68,9 @@ end
 Handle Quote push event - matching Python SDK handle_Quote
 """
 function handle_quote(callbacks::Callbacks, symbol::String, quote_data::PushQuote)
-    if !isnothing(callbacks.get_quote)
+    if !isnothing(callbacks.realtime_quote)
         try
-            Base.invokelatest(callbacks.get_quote, symbol, to_namedtuple(quote_data))
+            Base.invokelatest(callbacks.realtime_quote, symbol, quote_data)
         catch e
             @error "Error in Quote callback" symbol=symbol exception=e
         end
@@ -83,7 +83,7 @@ Handle depth push event - matching Python SDK handle_depth
 function handle_depth(callbacks::Callbacks, symbol::String, depth::PushDepth)
     if !isnothing(callbacks.depth)
         try
-            Base.invokelatest(callbacks.depth, symbol, to_namedtuple(depth))
+            Base.invokelatest(callbacks.depth, symbol, depth)
         catch e
             @error "Error in depth callback" symbol=symbol exception=e
         end
@@ -96,7 +96,7 @@ Handle brokers push event - matching Python SDK handle_brokers
 function handle_brokers(callbacks::Callbacks, symbol::String, brokers::PushBrokers)
     if !isnothing(callbacks.brokers)
         try
-            Base.invokelatest(callbacks.brokers, symbol, to_namedtuple(brokers))
+            Base.invokelatest(callbacks.brokers, symbol, brokers)
         catch e
             @error "Error in brokers callback" symbol=symbol exception=e
         end
@@ -109,7 +109,7 @@ Handle trades push event - matching Python SDK handle_trades
 function handle_trades(callbacks::Callbacks, symbol::String, trades::PushTransaction)
     if !isnothing(callbacks.trades)
         try
-            Base.invokelatest(callbacks.trades, symbol, to_namedtuple(trades))
+            Base.invokelatest(callbacks.trades, symbol, trades)
         catch e
             @error "Error in trades callback" symbol=symbol exception=e
         end
@@ -119,10 +119,10 @@ end
 """
 Handle candlestick push event - matching Python SDK handle_candlesticks
 """
-function handle_candlesticks(callbacks::Callbacks, symbol::String, candlestick::PushCandlestick)
+function handle_candlestick(callbacks::Callbacks, symbol::String, candlestick::PushCandlestick)
     if !isnothing(callbacks.candlestick)
         try
-            Base.invokelatest(callbacks.candlestick, symbol, to_namedtuple(candlestick))
+            Base.invokelatest(callbacks.candlestick, symbol, candlestick)
         catch e
             @error "Error in candlestick callback" symbol=symbol exception=e
         end
@@ -133,7 +133,7 @@ end
 Set Quote callback function
 """
 function set_on_quote!(callbacks::Callbacks, callback::Function)
-    callbacks.get_quote = callback
+    callbacks.realtime_quote = callback
 end
 
 """

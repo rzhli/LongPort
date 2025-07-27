@@ -1,5 +1,7 @@
 module Utils
 
+using ..QuoteProtocol, Logging, Dates
+
 export to_namedtuple
 
 """
@@ -8,26 +10,34 @@ export to_namedtuple
 function to_namedtuple(obj)
     if obj === nothing
         return nothing
-    elseif typeof(obj) <: Vector
-        return [to_namedtuple(item) for item in obj]
+    elseif obj isa Vector
+        result = [to_namedtuple(item) for item in obj]
+        if length(result) == 1      # 单个namedtuple不再以vector格式输出
+            return result[1]
+        end
+        return result
     elseif isstructtype(typeof(obj))
-        if isa(obj, String) # String is a struct, but we don't want to convert it
+        if obj isa String # String is a struct, but we don't want to convert it
             return obj
         end
         field_names = fieldnames(typeof(obj))
-        field_values = []
-        for name in field_names
+        field_values = map(field_names) do name
             field_val = getfield(obj, name)
-            if isa(field_val, Union{Float64, Int64, String, Bool}) || field_val === nothing
-                push!(field_values, field_val)
+            if name === :timestamp
+                # All protobuf timestamps are expected to be in seconds.
+                dt = unix2datetime(field_val)
+                return Dates.format(dt, "yyyy-mm-ddTHH:MM:SS")
+            elseif isstructtype(typeof(field_val)) && !(field_val isa String)
+                return to_namedtuple(field_val)
             else
-                push!(field_values, to_namedtuple(field_val))
+                return field_val
             end
         end
-        return NamedTuple{field_names}(field_values)
+        return NamedTuple{field_names}(Tuple(field_values))
     else
         return obj
     end
 end
+
 
 end

@@ -31,6 +31,7 @@ module Config
         quote_ws_url::Union{String, Nothing}
         trade_ws_url::Union{String, Nothing}
         language::Constant.Language
+        enable_overnight::Bool
         
         function config(
             app_key::String,
@@ -40,7 +41,8 @@ module Config
             http_url::Union{String, Nothing} = nothing,
             quote_ws_url::Union{String, Nothing} = nothing,
             trade_ws_url::Union{String, Nothing} = nothing,
-            language::Constant.Language = Constant.ZH_CN
+            language::Constant.Language = Constant.ZH_CN,
+            enable_overnight::Bool = false   # 美股夜盘交易行情，需订阅US LV1实时行情并开启enable_overnight参数，否则会返回null
         )
             new(
                 app_key,
@@ -50,7 +52,8 @@ module Config
                 http_url,
                 quote_ws_url,
                 trade_ws_url,
-                language
+                language,
+                enable_overnight
             )
         end
     end
@@ -134,8 +137,7 @@ module Config
             token_expire_time;
             http_url = http_url,
             quote_ws_url = quote_ws_url,
-            trade_ws_url = trade_ws_url,
-            language = Constant.ZH_CN
+            trade_ws_url = trade_ws_url
         )
     end
 

@@ -1,665 +1,498 @@
-# 参照Python SDK的QuoteContext实现
 module Quote
 
-using ProtoBuf, JSON3, Dates
-using ..Config, ..QuoteTypes, ..Push, ..Client, ..QuoteProtocol
-using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession
-using ..Client: HttpClient, WSClient
-using ..Constant: Language
+using ProtoBuf, JSON3, Dates, Logging, DataFrames
+using ..Config, ..QuoteTypes, ..Push, ..Client, ..QuoteProtocol, ..ControlProtocol
+using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCommand, 
+        SecurityCandlestickRequest, SecurityCandlestickResponse, QuoteSubscribeRequest,
+        QuoteSubscribeResponse, QuoteUnsubscribeRequest, QuoteUnsubscribeResponse, 
+        MultiSecurityRequest, SecurityQuoteResponse, SecurityRequest, SecurityDepthResponse,
+        SecurityStaticInfo, SecurityStaticInfoResponse, OptionQuoteResponse, 
+        WarrantQuoteResponse, SecurityBrokersResponse, ParticipantBrokerIdsResponse
+        
+using ..Client: WSClient
 using ..Cache: SimpleCache, CacheWithKey, get_or_update
 using ..Utils: to_namedtuple
+using ..Constant: Language
+import ..Errors:LongportException
+
+# A simple wrapper to mimic Rust's Arc for shared ownership semantics
+struct Arc{T}
+    value::T
+end
+
+Base.getproperty(arc::Arc, sym::Symbol) = getproperty(getfield(arc, :value), sym)
+Base.setproperty!(arc::Arc, sym::Symbol, x) = setproperty!(getfield(arc, :value), sym, x)
 
 export QuoteContext, 
-       connect!, disconnect!, get_quote, subscribe, unsubscribe, candlesticks, 
-       set_on_quote, static_info, depth, brokers, trades,
+       try_new, disconnect!,
+       realtime_quote, subscribe, unsubscribe, candlesticks,
+       set_on_quote, set_on_depth, set_on_brokers, set_on_trades, set_on_candlestick,
+       static_info, depth, brokers, trades,
        intraday, option_quote, warrant_quote, participants, subscriptions,
-       member_id, Quote_level, realtime_quote, realtime_depth, realtime_brokers,
-       realtime_trades, realtime_candlesticks
+       option_chain_dates, option_chain_strikes, warrant_issuers, warrant_filter,
+       trading_sessions, trading_days, capital_flow_intraday, capital_flow_distribution,
+       calc_indexes, member_id, quote_level
 
-"""
-# Examples
-```julia
-# 加载配置
-config = Config.from_toml()
+# --- Command Types for the Core Actor ---
+abstract type AbstractCommand end
 
-# 创建QuoteContext
-ctx = QuoteContext(config)
+struct GenericRequestCmd <: AbstractCommand
+    cmd_code::QuoteCommand.T
+    request_pb::Any
+    response_type::Type
+    resp_ch::Channel{Any}                   # response channel
+end
 
-# 获取基础信息
-resp = get_quote(["700.HK", "AAPL.US", "TSLA.US"])
-println(resp)
+struct HttpGetCmd <: AbstractCommand
+    path::String
+    params::Dict
+    resp_ch::Channel{Any}           # response channel
+end
 
-# 订阅行情
-set_on_quote(on_quote)
-subscribe(["700.HK"], [SubType.QUOTE], is_first_push=true)
-```
-"""
-mutable struct QuoteContext
+struct DisconnectCmd <: AbstractCommand end
+
+# --- Core Actor and Context Structs ---
+
+mutable struct InnerQuoteContext
     config::Config.config
-    callbacks::Push.Callbacks
-    language::Language
     ws_client::Union{WSClient, Nothing}
-    
-    # 缓存
+    command_ch::Channel{Any}
+    core_task::Union{Task, Nothing}
+    push_dispatcher_task::Union{Task, Nothing}
+    callbacks::Push.Callbacks
+
+    # Caches
     cache_participants::SimpleCache{Vector{Any}}
     cache_issuers::SimpleCache{Vector{Any}}
-    cache_option_chain_expiry_dates::CacheWithKey{String, Vector{String}}
-    cache_option_chain_strike_info::CacheWithKey{String, Vector{Any}}
+    cache_option_chain_expiry_dates::CacheWithKey{String, Vector{Any}}
+    cache_option_chain_strike_info::CacheWithKey{Tuple{String, Any}, Vector{Any}}
     cache_trading_sessions::SimpleCache{Vector{Any}}
-    
-    # 实时数据存储
-    realtime_quotes::Dict{String, Any}
-    realtime_depths::Dict{String, Any}
-    realtime_trades::Dict{String, Vector{Any}}
-    realtime_brokers::Dict{String, Any}
-    realtime_candlesticks::Dict{String, Dict{String, Vector{Any}}}
-    
-    function QuoteContext(config::Config.config)
-        new(
-            config, 
-            Push.Callbacks(),
-            config.language,
-            nothing,  # ws_client初始为空
-            # 缓存 - 30分钟TTL
-            SimpleCache{Vector{Any}}(30.0 * 60),
-            SimpleCache{Vector{Any}}(30.0 * 60),
-            CacheWithKey{String, Vector{String}}(30.0 * 60),
-            CacheWithKey{String, Vector{Any}}(30.0 * 60),
-            SimpleCache{Vector{Any}}(2.0 * 60 * 60), # 2小时TTL
-            # 实时数据存储
-            Dict{String, Any}(),
-            Dict{String, Any}(),
-            Dict{String, Vector{Any}}(),
-            Dict{String, Any}(),
-            Dict{String, Dict{String, Vector{Any}}}()
-        )
-    end
+
+    # Info from Core
+    member_id::Int64
+    quote_level::String
 end
 
+@doc """
+Quote context handle. It is a lightweight wrapper around the core actor.
 """
-Returns the language setting
-"""
-function get_language(ctx::QuoteContext)::Language
-    return ctx.language
+struct QuoteContext
+    inner::Arc{InnerQuoteContext}
 end
 
-"""
-Connect to WebSocket server
-"""
-function connect!(ctx::QuoteContext)
-    if !isnothing(ctx.ws_client) && ctx.ws_client.connected
-        return
-    end
-    
-    # 创建并连接WSClient
-    ctx.ws_client = WSClient(ctx.config.quote_ws_url)
-    
-    # 设置推送回调
-    ctx.ws_client.on_push = (cmd, body) -> dispatch_push(ctx, cmd, body)
+# --- Core Actor Logic ---
 
-    # 创建认证请求
-    ctx.ws_client.auth_data = Client.create_auth_request(ctx.config) 
-    
-    # 建立连接
-    try
-        Client.connect!(ctx.ws_client)
+function core_run(inner::InnerQuoteContext, push_tx::Channel)
+    # @info "Quote core actor started."
+    should_run = true
+    reconnect_attempts = 0
+
+    while should_run
+        try
+            # 1. Establish Connection
+            ws = WSClient(inner.config.quote_ws_url)
+            inner.ws_client = ws
+            ws.on_push = (cmd, body) -> put!(push_tx, (cmd, body))
+            ws.auth_data = Client.create_auth_request(inner.config)
+            Client.connect!(ws)
+            # @info "Quote WebSocket connected."
+            reconnect_attempts = 0 # Reset on successful connection
+
+            # TODO: Fetch member_id and quote_level after connection
+            # For now, we'll leave them as default.
+            # inner.member_id = ...
+            # inner.quote_level = ...
+
+            # 2. Main Command Processing Loop
+            for cmd in inner.command_ch
+                handle_command(inner, cmd)
+                if cmd isa DisconnectCmd
+                    should_run = false
+                    break
+                end
+            end
+
+        catch e
+            if e isa InvalidStateException && e.state == :closed
+                # @warn "Command channel closed, shutting down core actor."
+                should_run = false
+            elseif e isa LongportException && occursin("WebSocket", e.message)
+                reconnect_attempts += 1
+                delay = min(60.0, 2.0^reconnect_attempts) # Exponential backoff with max delay
+                @warn "Connection failed, attempting to reconnect in $(delay)s..." exception=(e, catch_backtrace())
+                sleep(delay)
+            else
+                @error "Quote core actor failed with an unhandled exception" exception=(e, catch_backtrace())
+                should_run = false # Exit on unhandled errors
+            end
+        finally
+            # 3. Cleanup before next loop iteration or exit
+            if !isnothing(inner.ws_client)
+                Client.disconnect!(inner.ws_client)
+                inner.ws_client = nothing
+            end
+        end
+    end
+
+    close(push_tx)
+    # @info "Quote core actor stopped."
+end
+
+function handle_command(inner::InnerQuoteContext, cmd::AbstractCommand)
+    resp = try
+        if cmd isa DisconnectCmd
+            # No response needed, just break the loop
+            nothing
+        elseif cmd isa GenericRequestCmd
+            # Handle Protobuf requests over WebSocket
+            if isnothing(inner.ws_client) || !inner.ws_client.connected
+                throw(LongportException("WebSocket not connected"))
+            end
+            
+            local req_body::Vector{UInt8}
+            if cmd.request_pb isa Vector{UInt8}
+                req_body = cmd.request_pb
+            else
+                io_buf = IOBuffer()
+                encoder = ProtoBuf.ProtoEncoder(io_buf)
+                ProtoBuf.encode(encoder, cmd.request_pb)
+                req_body = take!(io_buf)
+            end
+
+            resp_body = Client.ws_request(inner.ws_client, UInt8(cmd.cmd_code), req_body)
+
+            if isempty(resp_body)
+                if cmd.cmd_code == QuoteCommand.Unsubscribe
+                    # Unsubscribe sends no response body, this is expected.
+                    resp = QuoteUnsubscribeResponse()
+                else
+                    # @warn "Received empty response for command" cmd_code = cmd.cmd_code
+                    resp = cmd.response_type() # Return empty response object
+                end
+            else
+                # @info "Received response body" cmd_code=cmd.cmd_code hex_body=bytes2hex(resp_body) length(resp_body)
+                decoder = ProtoBuf.ProtoDecoder(IOBuffer(resp_body))
+                resp = ProtoBuf.decode(decoder, cmd.response_type)
+            end
+        elseif cmd isa HttpGetCmd
+            # Handle HTTP GET requests
+            Client.get(inner.config, cmd.path; params=cmd.params)
+        end
     catch e
-        @error "行情服务器连接失败" exception=e
-        ctx.ws_client = nothing
-        rethrow(e)
+        @error "Failed to handle command" command=typeof(cmd) exception=(e, catch_backtrace())
+        e # Propagate exception as the response
+    end
+
+    # Send response back to the caller
+    if !(cmd isa DisconnectCmd) && isopen(cmd.resp_ch)
+        put!(cmd.resp_ch, resp)
     end
 end
 
+# --- Push Dispatcher ---
+
+function dispatch_push_events(ctx::QuoteContext, push_rx::Channel)
+    # @info "Push event dispatcher started."
+    for (cmd_code, body) in push_rx
+        command = QuoteCommand.T(cmd_code)
+        io = IOBuffer(body)
+        decoder = ProtoBuf.ProtoDecoder(io)
+        callbacks = ctx.inner.callbacks
+
+        try
+            if command == QuoteCommand.PushQuoteData
+                data = ProtoBuf.decode(decoder, QuoteProtocol.PushQuote)
+                Push.handle_quote(callbacks, data.symbol, data)
+            elseif command == QuoteCommand.PushDepthData
+                data = ProtoBuf.decode(decoder, QuoteProtocol.PushDepth)
+                Push.handle_depth(callbacks, data.symbol, data)
+            elseif command == QuoteCommand.PushBrokersData
+                data = ProtoBuf.decode(decoder, QuoteProtocol.PushBrokers)
+                Push.handle_brokers(callbacks, data.symbol, data)
+            elseif command == QuoteCommand.PushTradeData
+                data = ProtoBuf.decode(decoder, QuoteProtocol.PushTransaction)
+                Push.handle_trades(callbacks, data.symbol, data)
+            else
+                # @warn "Unknown push command" cmd=cmd_code
+            end
+        catch e
+            @error "Failed to decode or dispatch push event" exception=(e, catch_backtrace())
+        end
+    end
+    # @info "Push event dispatcher stopped."
+end
+
+
+# --- Public API ---
+
+@doc """
+Asynchronously creates and initializes a `QuoteContext`.
+
+This is the main entry point for using the quote API. It sets up the WebSocket connection
+and the background processing task (Actor).
+
+# Arguments
+- `config::Config.config`: The configuration object.
+
+# Returns
+- `(QuoteContext, Channel)`: A tuple containing the `QuoteContext` handle and a `Channel` for receiving raw push events.
 """
-Disconnect from WebSocket server
+function try_new(config::Config.config)
+    command_ch = Channel{Any}(32)
+    push_ch = Channel{Any}(Inf)     # a `Channel` for receiving raw push events
+
+    inner = InnerQuoteContext(
+        config,
+        nothing, # ws_client
+        command_ch,
+        nothing, # core_task
+        nothing, # push_dispatcher_task
+        Push.Callbacks(),
+        # Caches
+        SimpleCache{Vector{Any}}(1800.0),
+        SimpleCache{Vector{Any}}(1800.0),
+        CacheWithKey{String, Vector{Any}}(1800.0),
+        CacheWithKey{Tuple{String, Any}, Vector{Any}}(1800.0),
+        SimpleCache{Vector{Any}}(7200.0),
+        # Core info
+        0, "",
+    )
+    
+    ctx = QuoteContext(Arc(inner))
+
+    # Start background tasks
+    inner.core_task = @async core_run(inner, push_ch)
+    inner.push_dispatcher_task = @async dispatch_push_events(ctx, push_ch)
+
+    return (ctx, push_ch)
+end
+
+@doc """
+Disconnects the WebSocket and shuts down the background actor.
 """
 function disconnect!(ctx::QuoteContext)
-    if isnothing(ctx.ws_client)
-        return
+    inner = ctx.inner
+    if !isnothing(inner.core_task) && !istaskdone(inner.core_task)
+        put!(inner.command_ch, DisconnectCmd())
+        close(inner.command_ch) # Signal shutdown
+        wait(inner.core_task)
+        if !isnothing(inner.push_dispatcher_task)
+            wait(inner.push_dispatcher_task)
+        end
+        # @info "QuoteContext disconnected and cleaned up."
     end
-    
-    try
-        Client.disconnect!(ctx.ws_client)
-        @info "行情服务器已断开"
-    catch e
-        @warn "断开行情服务器时发生错误" exception=e
+end
+
+# Internal helper to send a command and wait for response
+function request(ctx::QuoteContext, cmd::AbstractCommand)
+    put!(ctx.inner.command_ch, cmd)
+    resp = take!(cmd.resp_ch)
+    if resp isa Exception
+        throw(resp)
     end
-    
-    ctx.ws_client = nothing
+    return resp
 end
 
+# --- Callback Setters ---
+function set_on_quote(ctx::QuoteContext, cb::Function); Push.set_on_quote!(ctx.inner.callbacks, cb); end
+function set_on_depth(ctx::QuoteContext, cb::Function); Push.set_on_depth!(ctx.inner.callbacks, cb); end
+function set_on_brokers(ctx::QuoteContext, cb::Function); Push.set_on_brokers!(ctx.inner.callbacks, cb); end
+function set_on_trades(ctx::QuoteContext, cb::Function); Push.set_on_trades!(ctx.inner.callbacks, cb); end
+function set_on_candlestick(ctx::QuoteContext, cb::Function); Push.set_on_candlestick!(ctx.inner.callbacks, cb); end
 
-"""
-Returns the member ID
-"""
-function member_id(ctx::QuoteContext)
-    # 这里需要实现具体的API调用
-    throw(LongportException("member_id not yet implemented"))
-end
+# --- Data API ---
 
-"""
-Returns the Quote level
-"""
-function Quote_level(ctx::QuoteContext)
-    # 这里需要实现具体的API调用
-    throw(LongportException("Quote_level not yet implemented"))
-end
-
-"""
-Clear all caches
-"""
-function clear_caches!(ctx::QuoteContext)
-    Cache.clear_cache!(ctx.cache_participants)
-    Cache.clear_cache!(ctx.cache_issuers)
-    Cache.clear_cache!(ctx.cache_option_chain_expiry_dates)
-    Cache.clear_cache!(ctx.cache_option_chain_strike_info)
-    Cache.clear_cache!(ctx.cache_trading_sessions)
-    @info "所有缓存已清空"
-end
-
-"""
-Clear realtime data storage
-"""
-function clear_realtime_data!(ctx::QuoteContext)
-    empty!(ctx.realtime_quotes)
-    empty!(ctx.realtime_depths)
-    empty!(ctx.realtime_trades)
-    empty!(ctx.realtime_brokers)
-    empty!(ctx.realtime_candlesticks)
-    @info "实时数据存储已清空"
-end
-
-"""
-Set Quote callback, after receiving the Quote data push, it will call back to this function.
-"""
-function set_on_quote(ctx::QuoteContext, callback::Function)
-    Push.set_on_quote!(ctx.callbacks, callback)
-    @info "Quote回调函数已设置"
-end
-
-"""
-Set depth callback, after receiving the depth data push, it will call back to this function.
-"""
-function set_on_depth(ctx::QuoteContext, callback::Function)
-    Push.set_on_depth!(ctx.callbacks, callback)
-    @info "depth回调函数已设置"
-end
-
-"""
-Set brokers callback, after receiving the brokers data push, it will call back to this function.
-"""
-function set_on_brokers(ctx::QuoteContext, callback::Function)
-    Push.set_on_brokers!(ctx.callbacks, callback)
-    @info "brokers回调函数已设置"
-end
-
-"""
-Set trades callback, after receiving the trades data push, it will call back to this function.
-"""
-function set_on_trades(ctx::QuoteContext, callback::Function)
-    Push.set_on_trades!(ctx.callbacks, callback)
-    @info "trades回调函数已设置"
-end
-
-"""
-Set candlestick callback, after receiving the candlestick updated event, it will call back to this function.
-"""
-function set_on_candlestick(ctx::QuoteContext, callback::Function)
-    Push.set_on_candlestick!(ctx.callbacks, callback)
-    @info "candlestick回调函数已设置"
-end
-
-# 内部通用的请求函数
-function serialize_request(ctx::QuoteContext, command_code::UInt8, request::T) where T
-    # 序列化请求
-    io_buf = IOBuffer()
-    encoder = ProtoBuf.ProtoEncoder(io_buf)
-    ProtoBuf.encode(encoder, request)
-    request_body = take!(io_buf)
-
-    # 发送WebSocket请求
-    return ws_request(ctx.ws_client, command_code, request_body)
-end
-
-
-"""
-Subscribe
-"""
 function subscribe(ctx::QuoteContext, symbols::Vector{String}, sub_types::Vector{SubType.T}; is_first_push::Bool=false)
-    if isempty(symbols)
-        throw(ArgumentError("Symbols list cannot be empty"))
-    end
-    
-    connect!(ctx)
-    
-    try
-        # 构建订阅请求消息
-        request = QuoteSubscribeRequest(symbols, sub_types, is_first_push)
-        
-        # 发送WebSocket序列化请求
-        serialize_request(ctx, UInt8(QuoteCommand.Subscribe), request)
-        
-        # @info "订阅请求成功" symbols=symbols sub_types=sub_types is_first_push=is_first_push
-        return [(symbol = s, sub_types = sub_types) for s in symbols]
-    catch e
-        @error "订阅请求失败" symbols=symbols sub_types=sub_types exception=e
-        rethrow(e)
-    end
+    req = QuoteSubscribeRequest(symbols, sub_types, is_first_push)
+    cmd = GenericRequestCmd(QuoteCommand.Subscribe, req, QuoteSubscribeResponse, Channel(1))
+    request(ctx, cmd)
+    return [(symbol = s, sub_types = sub_types) for s in symbols]
 end
 
-"""
-Unsubscribe
-"""
 function unsubscribe(ctx::QuoteContext, symbols::Vector{String}, sub_types::Vector{SubType.T})
-    if isempty(symbols)
-        throw(ArgumentError("Symbols list cannot be empty"))
-    end
-    
-    connect!(ctx)
-    
-    try
-        # 构建取消订阅请求消息
-        request = QuoteUnsubscribeRequest(symbols, sub_types, false)
-        
-        # 发送WebSocket序列化请求
-        serialize_request(ctx, UInt8(QuoteCommand.Unsubscribe), request)
-        
-        # @info "取消订阅请求成功" symbols=symbols sub_types=sub_types
-        return [(symbol = s, sub_types = sub_types) for s in symbols]
-    catch e
-        @error "取消订阅请求失败" symbols=symbols sub_types=sub_types exception=e
-        rethrow(e)
-    end
+    req = QuoteUnsubscribeRequest(symbols, sub_types, false)
+    cmd = GenericRequestCmd(QuoteCommand.Unsubscribe, req, QuoteUnsubscribeResponse, Channel(1))
+    request(ctx, cmd)
+
+    return [(symbol = s, sub_types = sub_types) for s in symbols]
 end
 
-"""
-Get subscription information
-"""
-function subscriptions(ctx::QuoteContext)
-    # 这里需要实现具体的API调用
-    throw(LongportException("subscriptions not yet implemented"))
-end
-
-"""
-Get basic information of securities
-"""
-function static_info(ctx::QuoteContext, symbols::Vector{String})
-    if isempty(symbols)
-        throw(ArgumentError("Symbols list cannot be empty"))
-    end
-    
-    try
-        req = MultiSecurityRequest(symbols)
-        response = request(ctx, UInt8(QuerySecurityStaticInfo), req, SecurityStaticInfoResponse)
-        
-        @info "static_info查询成功" symbols=symbols count=length(response.secu_static_info)
-        return response.secu_static_info
-        
-    catch e
-        @error "static_info API调用失败" symbols=symbols exception=e
-        rethrow(e)
-    end
-end
-
-
-
-"""
-Get Quote of securities
-"""
-function get_quote(ctx::QuoteContext, symbols::Vector{String})
-    if isempty(symbols)
-        throw(ArgumentError("Symbols list cannot be empty"))
-    end
-    
-    connect!(ctx)
-
-    try
-        req = MultiSecurityRequest(symbols)
-        response_body = serialize_request(ctx, UInt8(QuoteCommand.QuerySecurityQuote), req)
-        
-        @info "收到响应数据" length=length(response_body) 
-        # @show hex_bytes=bytes2hex(response_body)
-        
-        if length(response_body) == 0
-            @warn "收到空响应"
-            return NamedTuple[]
-        end
-        
-        io = IOBuffer(response_body)
-        decoder = ProtoBuf.ProtoDecoder(io)
-        
-        # @info "ProtoBuf解码开始" position=position(io)
-        response = decode(decoder, SecurityQuoteResponse)
-        # @info "Quote查询成功" symbols=symbols count=length(response.secu_quote)
-        return to_namedtuple(response.secu_quote)
-    catch e
-        @error "Quote API调用失败" symbols=symbols exception=e
-        rethrow(e)
-    end
-end
-
-"""
-Get Quote of option securities
-"""
-function option_quote(ctx::QuoteContext, symbols::Vector{String})
-    if isempty(symbols)
-        throw(ArgumentError("Symbols list cannot be empty"))
-    end
-    
-    # 这里需要实现具体的API调用
-    throw(LongportException("option_quote not yet implemented"))
-end
-
-"""
-Get Quote of warrant securities
-"""
-function warrant_quote(ctx::QuoteContext, symbols::Vector{String})
-    if isempty(symbols)
-        throw(ArgumentError("Symbols list cannot be empty"))
-    end
-    
-    # 这里需要实现具体的API调用
-    throw(LongportException("warrant_quote not yet implemented"))
-end
-
-"""
-Get security depth
-"""
-function depth(ctx::QuoteContext, symbol::String)
-    try
-        req = SecurityRequest(symbol)
-        response = request(ctx, UInt8(QueryDepth), req, SecurityDepthResponse)
-        
-        @info "depth查询成功" symbol=symbol ask_count=length(response.ask) bid_count=length(response.bid)
-        return response
-        
-    catch e
-        @error "depth API调用失败" symbol=symbol exception=e
-        rethrow(e)
-    end
-end
-
-"""
-Get security brokers
-"""
-function brokers(ctx::QuoteContext, symbol::String)
-    # 创建HTTP客户端
-    client = HttpClient(ctx.config)
-    
-    # 构建请求参数
-    params = Dict(
-        "symbol" => symbol
-    )
-    
-    try
-        # 调用API - 获取证券经纪商信息
-        response = get("/v1/quote/brokers", params=params, headers=Dict{String,String}(), config=ctx.config)
-        
-        # 解析响应
-        if haskey(response, "data")
-            return response["data"]
-        else
-            return response
-        end
-    catch e
-        @error "brokers API调用失败" symbol=symbol exception=e
-        rethrow(e)
-    end
-end
-
-"""
-Get participants
-"""
-function participants(ctx::QuoteContext)
-    # 这里需要实现具体的API调用
-    throw(LongportException("participants not yet implemented"))
-end
-
-"""
-Get security trades
-"""
-function trades(ctx::QuoteContext, symbol::String, count::Int)
-    # 创建HTTP客户端
-    client = HttpClient(ctx.config)
-    
-    # 构建请求参数
-    params = Dict(
-        "symbol" => symbol,
-        "count" => string(count)
-    )
-    
-    try
-        # 调用API - 获取证券交易信息
-        response = get("/v1/quote/trades", params=params, headers=Dict{String,String}(), config=ctx.config)
-        
-        # 解析响应
-        if haskey(response, "data")
-            return response["data"]
-        else
-            return response
-        end
-    catch e
-        @error "trades API调用失败" symbol=symbol count=count exception=e
-        rethrow(e)
-    end
-end
-
-"""
-Get security intraday
-"""
-function intraday(ctx::QuoteContext, symbol::String)
-    # 创建HTTP客户端
-    client = HttpClient(ctx.config)
-    
-    # 构建请求参数
-    params = Dict(
-        "symbol" => symbol
-    )
-    
-    try
-        # 调用API - 获取证券日内分时信息
-        response = get("/v1/quote/intraday", params=params, headers=Dict{String,String}(), config=ctx.config)
-        
-        # 解析响应
-        if haskey(response, "data")
-            return response["data"]
-        else
-            return response
-        end
-    catch e
-        @error "intraday API调用失败" symbol=symbol exception=e
-        rethrow(e)
-    end
-end
-
-"""
-Get security candlesticks
-"""
-function candlesticks(
-    ctx::QuoteContext, symbol::String, period::CandlePeriod.T, count::Int, adjust_type::AdjustType.T; 
-    trade_sessions::TradeSession.T = TradeSession.Intraday, subscribe_realtimes::Bool = true
-    )
-    # 创建HTTP客户端
-    client = HttpClient(ctx.config)
-    
-    # 构建请求参数
-    params = Dict(
-        "symbol" => symbol,
-        "period" => string(period),
-        "count" => string(count),
-        "adjust_type" => string(adjust_type)
-    )
-    
-    if trade_sessions != TradeSession.Intraday
-        params["trade_sessions"] = string(trade_sessions)
-    end
-    
-    try
-        # 调用API - 获取证券K线
-        response = Client.get("/v1/quote/candlesticks"; params=params, config=ctx.config)
-        
-        # 解析响应
-        candlestick_data = if haskey(response, "data") && haskey(response["data"], "candlesticks")
-            @info "Candlesticks查询成功" symbol=symbol count=length(response["data"]["candlesticks"])
-            response["data"]["candlesticks"]
-        else
-            @error "Candlesticks查询失败或响应格式不正确" symbol=symbol response=response
-            []
-        end
-
-        if subscribe_realtimes && !isempty(candlestick_data)
-            @info "自动订阅实时行情以更新K线" symbol=symbol
-            try
-                subscribe(ctx, [symbol], [SubType.QUOTE, SubType.TRADE], is_first_push=true)
-            catch e
-                @warn "为K线自动订阅实时行情失败" symbol=symbol exception=e
-            end
-        end
-
-        return to_namedtuple(candlestick_data)
-    catch e
-        @error "candlesticks API调用失败" symbol=symbol exception=e
-        rethrow(e)
-    end
-end
-
-"""
-Get real-time Quote
-"""
 function realtime_quote(ctx::QuoteContext, symbols::Vector{String})
-    if isempty(symbols)
-        throw(ArgumentError("Symbols list cannot be empty"))
-    end
+    req = MultiSecurityRequest(symbols)
+    cmd = GenericRequestCmd(QuoteCommand.QuerySecurityQuote, req, SecurityQuoteResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return to_namedtuple(resp.secu_quote)
+end
+
+function candlesticks(
+    ctx::QuoteContext, symbol::String, period::CandlePeriod.T = DAY, count::Int64 = 365; 
+    trade_sessions::TradeSession.T = TradeSession.Intraday, adjust_type::AdjustType.T = AdjustType.FORWARD_ADJUST
+    )
+    req = SecurityCandlestickRequest(symbol, period, count, adjust_type, trade_sessions)
+    cmd = GenericRequestCmd(QuoteCommand.QueryCandlestick, req, SecurityCandlestickResponse, Channel(1))
+    resp = request(ctx, cmd)
     
-    results = []
-    for s in symbols
-        if haskey(ctx.realtime_quotes, s)
-            push!(results, ctx.realtime_quotes[s])
-        end
+    data = map(resp.candlesticks) do c
+        (
+            symbol = resp.symbol,
+            close = c.close,
+            open = c.open,
+            low = c.low,
+            high = c.high,
+            volume = c.volume,
+            turnover = c.turnover,
+            timestamp = c.timestamp
+        )
     end
-    return results
+    return DataFrame(data)
 end
 
-"""
-Get real-time depth
-"""
-function realtime_depth(ctx::QuoteContext, symbol::String)
-    return get(ctx.realtime_depths, symbol, nothing)
+function static_info(ctx::QuoteContext, symbols::Vector{String})
+    req = MultiSecurityRequest(symbols)
+    cmd = GenericRequestCmd(QuoteCommand.QuerySecurityStaticInfo, req, SecurityStaticInfoResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return to_namedtuple(resp.secu_static_info)
 end
 
-"""
-Get real-time brokers
-"""
-function realtime_brokers(ctx::QuoteContext, symbol::String)
-    return get(ctx.realtime_brokers, symbol, nothing)
+function trades(ctx::QuoteContext, symbol::String, count::Int)
+    cmd = HttpGetCmd("/v1/quote/trades", Dict("symbol" => symbol, "count" => count), Channel(1))
+    return request(ctx, cmd)
 end
 
-"""
-Get real-time trades
-"""
-function realtime_trades(ctx::QuoteContext, symbol::String; count::Int=500)
-    trades = get(ctx.realtime_trades, symbol, [])
+function brokers(ctx::QuoteContext, symbol::String)
+    req = SecurityRequest(symbol)
+    cmd = GenericRequestCmd(QuoteCommand.QueryBrokers, req, SecurityBrokersResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return (symbol = resp.symbol, ask_brokers = to_namedtuple(resp.ask_brokers), bid_brokers = to_namedtuple(resp.bid_brokers))
+end
+
+function intraday(ctx::QuoteContext, symbol::String)
+    cmd = HttpGetCmd("/v1/quote/intraday", Dict("symbol" => symbol), Channel(1))
+    return request(ctx, cmd)
+end
+
+# --- Additional Market Data Endpoints ---
+
+function option_chain_dates(ctx::QuoteContext, symbol::String)
+    """Get option chain expiry dates for a symbol"""
+    cmd = HttpGetCmd("/v1/quote/option-chain-dates", Dict("symbol" => symbol), Channel(1))
+    return request(ctx, cmd)
+end
+
+function option_chain_strikes(ctx::QuoteContext, symbol::String, expiry_date::String)
+    """Get option chain strike prices for a symbol and expiry date"""
+    cmd = HttpGetCmd("/v1/quote/option-chain-strikes", 
+        Dict("symbol" => symbol, "expiry_date" => expiry_date), Channel(1))
+    return request(ctx, cmd)
+end
+
+function warrant_issuers(ctx::QuoteContext)
+    """Get warrant issuer information"""
+    return get_or_update(ctx.inner.cache_issuers) do
+        result = Client.get(ctx.inner.config, "/v1/quote/warrant-issuers")
+        haskey(result, "data") ? result.data : []
+    end
+end
+
+function warrant_filter(ctx::QuoteContext; symbol::String="", issuer_id::String="", 
+                       warrant_type::String="", sort_by::String="", sort_order::String="")
+    """Filter warrants based on criteria"""
+    params = Dict{String, String}()
+    !isempty(symbol) && (params["symbol"] = symbol)
+    !isempty(issuer_id) && (params["issuer_id"] = issuer_id)
+    !isempty(warrant_type) && (params["warrant_type"] = warrant_type)
+    !isempty(sort_by) && (params["sort_by"] = sort_by)
+    !isempty(sort_order) && (params["sort_order"] = sort_order)
     
-    if length(trades) > count
-        return trades[1:count]
-    else
-        return trades
+    cmd = HttpGetCmd("/v1/quote/warrant-filter", params, Channel(1))
+    return request(ctx, cmd)
+end
+
+function trading_sessions(ctx::QuoteContext, market::String="")
+    """Get trading sessions information"""
+    return get_or_update(ctx.inner.cache_trading_sessions) do
+        params = isempty(market) ? Dict{String, String}() : Dict("market" => market)
+        result = Client.get(ctx.inner.config, "/v1/quote/trading-sessions"; params=params)
+        haskey(result, "data") ? result.data : []
     end
 end
 
-"""
-Get real-time candlesticks
-"""
-function realtime_candlesticks(ctx::QuoteContext, symbol::String, period::CandlePeriod.T; count::Int=500)
-    # 这里需要实现具体的API调用
-    throw(LongportException("realtime_candlesticks not yet implemented"))
+function trading_days(ctx::QuoteContext, market::String, start_date::String, end_date::String)
+    """Get trading days for a market within date range"""
+    params = Dict(
+        "market" => market,
+        "start_date" => start_date, 
+        "end_date" => end_date
+    )
+    cmd = HttpGetCmd("/v1/quote/trading-days", params, Channel(1))
+    return request(ctx, cmd)
 end
 
-"""
-推送分派
-"""
-function dispatch_push(ctx::QuoteContext, cmd::UInt8, body::Vector{UInt8})
-    command = QuoteCommand.T(cmd)
-    io = IOBuffer(body)
-    decoder = ProtoBuf.ProtoDecoder(io)
-
-    callbacks = ctx.callbacks
-
-    try
-        if command == QuoteCommand.PushQuoteData
-            data = decode(decoder, QuoteProtocol.PushQuote)
-            ctx.realtime_quotes[data.symbol] = to_namedtuple(data)
-            Push.handle_quote(callbacks, data.symbol, data)
-        elseif command == QuoteCommand.PushDepthData
-            data = decode(decoder, QuoteProtocol.PushDepth)
-            ctx.realtime_depths[data.symbol] = to_namedtuple(data)
-            Push.handle_depth(callbacks, data.symbol, data)
-        elseif command == QuoteCommand.PushBrokersData
-            data = decode(decoder, QuoteProtocol.PushBrokers)
-            ctx.realtime_brokers[data.symbol] = to_namedtuple(data)
-            Push.handle_brokers(callbacks, data.symbol, data)
-        elseif command == QuoteCommand.PushTradeData
-            data = decode(decoder, QuoteProtocol.PushTransaction)
-            if !haskey(ctx.realtime_trades, data.symbol)
-                ctx.realtime_trades[data.symbol] = []
-            end
-            
-            for trade in data.transaction
-                pushfirst!(ctx.realtime_trades[data.symbol], to_namedtuple(trade))
-            end
-            
-            Push.handle_trades(callbacks, data.symbol, data)
-        else
-            @warn "Unknown push command" cmd=cmd
-        end
-    catch e
-        @error "Failed to decode or dispatch push event" exception=(e, catch_backtrace())
-    end
+function capital_flow_intraday(ctx::QuoteContext, symbol::String)
+    """Get intraday capital flow for a symbol"""
+    cmd = HttpGetCmd("/v1/quote/capital-flow-intraday", Dict("symbol" => symbol), Channel(1))
+    return request(ctx, cmd)
 end
 
-# 为QuoteContext添加方法调用的便利函数，类似Python对象方法
-Base.getproperty(ctx::QuoteContext, name::Symbol) = begin
-    if name == :Quote || name == :quote
-        return (symbols::Vector{String}) -> get_quote(ctx, symbols)
-    elseif name == :subscribe  
-        return (symbols::Vector{String}, sub_types::Vector{SubType.T}; is_first_push::Bool=false) -> subscribe(ctx, symbols, sub_types; is_first_push=is_first_push)
-    elseif name == :set_on_quote
-        return (callback::Function) -> set_on_quote(ctx, callback)
-    elseif name == :set_on_depth
-        return (callback::Function) -> set_on_depth(ctx, callback)
-    elseif name == :set_on_brokers
-        return (callback::Function) -> set_on_brokers(ctx, callback)
-    elseif name == :set_on_trades
-        return (callback::Function) -> set_on_trades(ctx, callback)
-    elseif name == :set_on_candlestick
-        return (callback::Function) -> set_on_candlestick(ctx, callback)
-    elseif name == :static_info
-        return (symbols::Vector{String}) -> static_info(ctx, symbols)
-    elseif name == :depth
-        return (symbol::String) -> depth(ctx, symbol)
-    elseif name == :brokers
-        return (symbol::String) -> brokers(ctx, symbol)
-    elseif name == :trades
-        return (symbol::String, count::Int) -> trades(ctx, symbol, count)
-    elseif name == :intraday
-        return (symbol::String) -> intraday(ctx, symbol)
-    elseif name == :candlesticks
-        return (symbol::String, period::CandlePeriod.T, count::Int, adjust_type::AdjustType.T; 
-        trade_sessions::TradeSession.T = TradeSession.Intraday) -> candlesticks(ctx, symbol, 
-        period, count, adjust_type; trade_sessions=trade_sessions)
-    elseif name == :realtime_quote
-        return (symbols::Vector{String}) -> realtime_quote(ctx, symbols)
-    elseif name == :realtime_depth
-        return (symbol::String) -> realtime_depth(ctx, symbol)
-    elseif name == :realtime_brokers
-        return (symbol::String) -> realtime_brokers(ctx, symbol)
-    elseif name == :realtime_trades
-        return (symbol::String; count::Int=500) -> realtime_trades(ctx, symbol; count=count)
-    elseif name == :realtime_candlesticks
-        return (symbol::String, period::CandlePeriod.T; count::Int=500) -> realtime_candlesticks(ctx, symbol, period; count=count)
-    else
-        return getfield(ctx, name)
-    end
+function capital_flow_distribution(ctx::QuoteContext, symbol::String)
+    """Get capital flow distribution for a symbol"""
+    cmd = HttpGetCmd("/v1/quote/capital-flow-distribution", Dict("symbol" => symbol), Channel(1))
+    return request(ctx, cmd)
 end
+
+function calc_indexes(ctx::QuoteContext, symbols::Vector{String}, indexes::Vector{String})
+    """Get calculated indexes for symbols"""
+    params = Dict(
+        "symbol" => join(symbols, ","),
+        "indexes" => join(indexes, ",")
+    )
+    cmd = HttpGetCmd("/v1/quote/calc-indexes", params, Channel(1))
+    return request(ctx, cmd)
+end
+
+
+function depth(ctx::QuoteContext, symbol::String)
+    req = SecurityRequest(symbol)
+    cmd = GenericRequestCmd(QuoteCommand.QueryDepth, req, SecurityDepthResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return (symbol = resp.symbol, ask = to_namedtuple(resp.ask), bid = to_namedtuple(resp.bid))
+end
+
+function participants(ctx::QuoteContext)
+    req = Vector{UInt8}()
+    cmd = GenericRequestCmd(QuoteCommand.QueryParticipantBrokerIds, req, ParticipantBrokerIdsResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return to_namedtuple(resp.participant_broker_numbers)
+end
+
+function subscriptions(ctx::QuoteContext)
+    req = Vector{UInt8}()  # Empty request body for subscription query
+    cmd = GenericRequestCmd(QuoteCommand.Subscription, req, QuoteSubscribeResponse, Channel(1))
+    resp = request(ctx, cmd)
+    
+    # Return subscriptions in a structured format
+    return [(symbol = s, sub_types = resp.sub_types) for s in resp.symbols]
+end
+
+function option_quote(ctx::QuoteContext, symbols::Vector{String})
+    req = MultiSecurityRequest(symbols)
+    cmd = GenericRequestCmd(QuoteCommand.QueryOptionQuote, req, OptionQuoteResponse, Channel(1))
+    resp = request(ctx, cmd)
+    
+    # Convert to structured format including option-specific data
+    return to_namedtuple(resp.secu_quote)
+end
+
+function warrant_quote(ctx::QuoteContext, symbols::Vector{String})
+    req = MultiSecurityRequest(symbols)
+    cmd = GenericRequestCmd(QuoteCommand.QueryWarrantQuote, req, WarrantQuoteResponse, Channel(1))
+    resp = request(ctx, cmd)
+    
+    # Convert to structured format including warrant-specific data
+    return to_namedtuple(resp.secu_quote)
+end
+
+member_id(ctx::QuoteContext) = ctx.inner.member_id
+quote_level(ctx::QuoteContext) = ctx.inner.quote_level
 
 end # module Quote

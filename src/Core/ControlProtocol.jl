@@ -8,7 +8,8 @@ module ControlProtocol
     using ProtoBuf.EnumX: @enumx
 
     export ControlCommand, Heartbeat, ReconnectRequest, AuthRequest, var"Close.Code"
-    export ReconnectResponse, AuthResponse, Close
+    export ReconnectResponse, AuthResponse, Close 
+    export encode, decode
 
     @enumx ControlCommand begin
         CMD_CLOSE = 0 
@@ -262,4 +263,62 @@ module ControlProtocol
         !isempty(x.reason) && (encoded_size += PB._encoded_size(x.reason, 2))
         return encoded_size
     end
+
+    struct Error
+        code::UInt64
+        msg::String
+    end
+    PB.default_values(::Type{Error}) = (;code = zero(UInt64), msg = "")
+    PB.field_numbers(::Type{Error}) = (;code = 1, msg = 2)
+
+    function PB.decode(d::PB.AbstractProtoDecoder, ::Type{<:Error})
+        code = zero(UInt64)
+        msg = ""
+        while !PB.message_done(d)
+            field_number, wire_type = PB.decode_tag(d)
+            if field_number == 1
+                code = PB.decode(d, UInt64)
+            elseif field_number == 2
+                msg = PB.decode(d, String)
+            else
+                PB.skip(d, wire_type)
+            end
+        end
+        return Error(code, msg)
+    end
+
+    function PB.encode(e::PB.AbstractProtoEncoder, x::Error)
+        initpos = position(e.io)
+        x.code != zero(UInt64) && PB.encode(e, 1, x.code)
+        !isempty(x.msg) && PB.encode(e, 2, x.msg)
+        return position(e.io) - initpos
+    end
+    function PB._encoded_size(x::Error)
+        encoded_size = 0
+        x.code != zero(UInt64) && (encoded_size += PB._encoded_size(x.code, 1))
+        !isempty(x.msg) && (encoded_size += PB._encoded_size(x.msg, 2))
+        return encoded_size
+    end
+
+    """
+    encode(message) -> Vector{UInt8}
+
+    Serializes a Protobuf message struct into a byte vector.
+    """
+    function encode(message)
+        io_buf = IOBuffer()
+        encoder = PB.ProtoEncoder(io_buf)
+        PB.encode(encoder, message)
+        return take!(io_buf)
+    end
+
+    """
+    decode(data::Vector{UInt8}, message_type)
+
+    Deserializes a byte vector into a Protobuf message struct of the given type.
+    """
+    function decode(data::Vector{UInt8}, message_type)
+        return PB.decode(PB.ProtoDecoder(IOBuffer(data)), message_type)
+    end
+
 end # module

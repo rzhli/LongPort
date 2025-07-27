@@ -1,6 +1,6 @@
 module Client
 
-using HTTP, JSON3, URIs, SHA, Dates, ProtoBuf
+using HTTP, JSON3, URIs, SHA, Dates, CodecZlib
 using HTTP: WebSockets
 import HTTP.WebSockets: send
 using Base.Threads
@@ -9,18 +9,21 @@ using ..Config
 using ..Constant
 using ..ControlProtocol
 using ..QuoteProtocol
+using ..Errors
 
-export HttpClient, WSClient, create_auth_request, get_otp, refresh_token,
-       ws_request, connect!, disconnect! 
-        
+
+
+export WSClient, refresh_token, post
 
 # WebSocket Client Constants (参考 Rust 实现)
 const REQUEST_TIMEOUT = 30.0  # seconds
 const HEARTBEAT_TIMEOUT = 120.0  # seconds
 
-# Command codes (use ControlProtocol enum values)
+# 认证和心跳命令 (use ControlProtocol enum values)
 const COMMAND_CODE_AUTH = UInt8(ControlProtocol.ControlCommand.CMD_AUTH)
-const COMMAND_CODE_HEARTBEAT = UInt8(ControlProtocol.ControlCommand.CMD_HEARTBEAT)
+const COMMAND_CODE_HEARTBEAT = UInt8(ControlCommand.CMD_HEARTBEAT)
+const COMMAND_CODE_RECONNECT = UInt8(ControlCommand.CMD_RECONNECT)
+const COMMAND_CODE_CLOSE = UInt8(ControlCommand.CMD_CLOSE)
 
 # ==================== Signature Authentication ====================
 
@@ -72,23 +75,60 @@ end
 
 # ==================== HTTP Client (简化版本仅用于获取OTP) ====================
 
-
-
 """
-HttpClient struct - 简化版本仅用于OTP获取
-
-包装了HTTP客户端配置，提供OTP获取功能
+get(config::Config.config, path::String; params::Dict{String, String}=Dict{String, String}()) -> JSON3.Object
+通用HTTP get函数
 """
-struct HttpClient
-    config::Config.config
-    
-    function HttpClient(config::Config.config)
-        new(config)
+
+function get(config::Config.config, path::String; params::Dict{String, String}=Dict{String, String}())
+    try
+        # 构建请求URL
+        base_url = config.http_url
+        
+        query_string = join(["$(k)=$(HTTP.URIs.escapeuri(v))" for (k, v) in params], "&")
+        full_url = base_url * path * (isempty(query_string) ? "" : "?" * query_string)
+        
+        # 生成时间戳
+        timestamp = string(floor(Int, time() * 1000))
+        
+        # 构建请求头
+        headers = Dict{String, String}(
+            "X-Api-Key" => config.app_key,
+            "Authorization" => "Bearer $(config.access_token)",
+            "X-Timestamp" => timestamp,
+            "Content-Type" => "application/json; charset=utf-8"
+        )
+        
+        # 生成签名
+        signature = sign("GET", path, headers, query_string, "", config)
+        headers["X-Api-Signature"] = signature
+        
+        # 发送HTTP GET请求
+        response = HTTP.get(full_url, headers = headers)
+        
+        # 检查响应状态
+        if response.status >= 400
+            @error "HTTP GET请求失败" path=path status=response.status body=String(response.body)
+            throw(LongportException("HTTP GET请求失败，状态码: $(response.status)"))
+        end
+        
+        # 解析JSON响应
+        result = JSON3.read(response.body)
+        
+        if haskey(result, "code") && result.code != 0
+            @error "API请求失败" path=path code=result.code msg=result.msg
+            throw(LongportException("API请求失败: $(result.msg)"))
+        end
+        
+        return result
+    catch e
+        @error "HTTP GET请求异常" path=path exception=(e, catch_backtrace())
+        rethrow(e)
     end
 end
 
 """
-refresh_token(client::HttpClient, expired_at::String) -> Dict
+refresh_token(config::Config.config, expired_at::String) -> Dict
 
 Refresh the access token using the refresh token API
 Reference: https://open.longportapp.com/zh-CN/docs/refresh-token-api
@@ -99,50 +139,11 @@ Reference: https://open.longportapp.com/zh-CN/docs/refresh-token-api
 # Returns
 - Dictionary containing new token information
 """
-function refresh_token(client::HttpClient, expired_at::String)::Dict
+function refresh_token(config::Config.config, expired_at::String)::Dict
     try
-        # 构建请求URL
-        base_url = client.config.http_url
-        url = base_url * "/v1/token/refresh"
-        
-        # 构建查询参数
-        params = "expired_at=" * HTTP.URIs.escapeuri(expired_at)
-        full_url = url * "?" * params
-        
-        # 生成时间戳
-        timestamp = string(floor(Int, time() * 1000))
-        
-        # 构建请求头
-        headers = Dict{String, String}(
-            "X-Api-Key" => client.config.app_key,
-            "Authorization" => "Bearer $(client.config.access_token)",
-            "X-Timestamp" => timestamp,
-            "Content-Type" => "application/json; charset=utf-8"
-        )
-        
-        # 生成签名
-        signature = sign("GET", "/v1/token/refresh", headers, params, "", client.config)
-        headers["X-Api-Signature"] = signature
-        
-        # 发送HTTP GET请求
-        response = HTTP.get(full_url, headers = headers)
-        
-        # 检查响应状态
-        if response.status >= 400
-            @error "刷新Token失败" status=response.status body=String(response.body)
-            throw(Longport.LongportException("刷新Token失败，状态码: $(response.status)"))
-        end
-        
-        # 解析JSON响应
-        result = JSON3.read(response.body)
-        
-        if result.code != 0
-            @error "刷新Token失败" code=result.code msg=result.msg
-            throw(Longport.LongportException("刷新Token失败: $(result.msg)"))
-        end
-        
+        params = Dict("expired_at" => expired_at)
+        result = get(config, "/v1/token/refresh"; params=params)
         return result.data
-        
     catch e
         @error "刷新Token失败" exception=(e, catch_backtrace())
         rethrow(e)
@@ -150,7 +151,7 @@ function refresh_token(client::HttpClient, expired_at::String)::Dict
 end
 
 """
-get_otp(client::HttpClient) -> NamedTuple
+get_otp(config::Config.config) -> NamedTuple
 
 Get the socket OTP(One Time Password) and connection info
 Reference: https://open.longportapp.com/zh-CN/docs/socket-token-api
@@ -161,54 +162,68 @@ Returns:
   - limit: Int - Total connection limit
   - online: Int - Current online connections
 """
-function get_otp(client::HttpClient)::NamedTuple{(:otp, :limit, :online), Tuple{String, Int, Int}}
+function get_otp(config::Config.config)::NamedTuple{(:otp, :limit, :online), Tuple{String, Int, Int}}
     try
-        # 构建请求URL
-        base_url = client.config.http_url
-        url = base_url * "/v1/socket/token"
-        
-        # 生成时间戳
-        timestamp = string(floor(Int, time() * 1000))
-        
-        # 构建请求头
-        headers = Dict{String, String}(
-            "X-Api-Key" => client.config.app_key,
-            "Authorization" => "Bearer $(client.config.access_token)",
-            "X-Timestamp" => timestamp,
-            "Content-Type" => "application/json; charset=utf-8"
-        )
-        
-        # 生成签名
-        signature = sign("GET", "/v1/socket/token", headers, "", "", client.config)
-        headers["X-Api-Signature"] = signature
-        
-        # 发送HTTP GET请求
-        response = HTTP.get(url, headers = headers)
-        
-        # 检查响应状态
-        if response.status >= 400
-            @error "获取OTP失败" status=response.status body=String(response.body)
-            throw(Longport.LongportException("获取OTP失败，状态码: $(response.status)"))
-        end
-        
-        # 解析JSON响应
-        result = JSON3.read(response.body)
-        
-        # 检查API响应状态
-        if result.code != 0
-            @error "获取OTP失败" code=result.code msg=result.message
-            throw(Longport.LongportException("获取OTP失败: $(result.message)"))
-        end
-        
-        # 返回完整的响应信息
+        result = get(config, "/v1/socket/token")
         return (
             otp = result.data.otp,
             limit = result.data.limit,
             online = result.data.online
         )
-        
     catch e
         @error "获取OTP失败" exception=(e, catch_backtrace())
+        rethrow(e)
+    end
+end
+
+"""
+post(config::Config.config, path::String, data::Dict) -> JSON3.Object
+通用HTTP POST函数用于交易API
+"""
+function post(config::Config.config, path::String, data::Dict)
+    try
+        # 构建请求URL
+        base_url = config.http_url
+        full_url = base_url * path
+        
+        # 生成时间戳
+        timestamp = string(floor(Int, time() * 1000))
+        
+        # 序列化请求体
+        body = JSON3.write(data)
+        
+        # 构建请求头
+        headers = Dict{String, String}(
+            "X-Api-Key" => config.app_key,
+            "Authorization" => "Bearer $(config.access_token)",
+            "X-Timestamp" => timestamp,
+            "Content-Type" => "application/json; charset=utf-8"
+        )
+        
+        # 生成签名
+        signature = sign("POST", path, headers, "", body, config)
+        headers["X-Api-Signature"] = signature
+        
+        # 发送HTTP POST请求
+        response = HTTP.post(full_url, headers = headers, body = body)
+        
+        # 检查响应状态
+        if response.status >= 400
+            @error "HTTP POST请求失败" path=path status=response.status body=String(response.body)
+            throw(LongportException("HTTP POST请求失败，状态码: $(response.status)"))
+        end
+        
+        # 解析JSON响应
+        result = JSON3.read(response.body)
+        
+        if haskey(result, "code") && result.code != 0
+            @error "API请求失败" path=path code=result.code msg=result.msg
+            throw(LongportException("API请求失败: $(result.msg)"))
+        end
+        
+        return result
+    catch e
+        @error "HTTP POST请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
     end
 end
@@ -236,6 +251,9 @@ mutable struct WSClient
     pending_responses::Dict{String, Tuple{UInt8, Vector{UInt8}}}
     auth_data::Union{Nothing,Vector{UInt8}}
     on_push::Union{Function, Nothing}
+    heartbeat_task::Union{Nothing, Task}
+    reconnect_attempts::Int
+    reconnect_task::Union{Nothing, Task}
 
     function WSClient(url::String)
         new(
@@ -245,7 +263,10 @@ mutable struct WSClient
             UInt32(1),              # seq_id
             Dict{String, Tuple{UInt8, Vector{UInt8}}}(), # pending_responses
             nothing,                # auth_data
-            nothing
+            nothing,
+            nothing,                # heartbeat_task
+            0,                      # reconnect_attempts
+            nothing                 # reconnect_task
         )
     end
 end
@@ -282,9 +303,8 @@ function connect!(client::WSClient)
             send_request_packet(client, COMMAND_CODE_AUTH, client.auth_data)
             # @info "认证包已发送，等待响应..."
             
-            # 启动消息和心跳循环
+            # 启动消息处理循环
             start_message_loop(client)
-            start_heartbeat_loop(client)
             
             # 保持连接开放，直到被外部关闭
             while !isnothing(client.ws) && isopen(client.ws.io)
@@ -294,7 +314,7 @@ function connect!(client::WSClient)
     end
     
     # 等待认证完成（而不是仅仅物理连接）
-    max_wait = 10.0
+    max_wait = 30.0
     wait_interval = 0.1
     elapsed = 0.0
     
@@ -304,7 +324,7 @@ function connect!(client::WSClient)
     end
     
     if !client.connected
-        throw(Longport.LongportException("WebSocket连接或认证超时"))
+        throw(LongportException("WebSocket连接或认证超时"))
     end
 end
 
@@ -317,9 +337,22 @@ function disconnect!(client::WSClient)
     if !client.connected
         return
     end
-    
+
     @info "正在断开 WebSocket 连接..."
-    
+
+    # Set connected to false first to signal other loops to stop.
+    client.connected = false
+
+    # Interrupt the heartbeat task
+    if !isnothing(client.heartbeat_task) && !istaskdone(client.heartbeat_task)
+        schedule(client.heartbeat_task, InterruptException(); error = true)
+    end
+
+    # Interrupt the reconnect task
+    if !isnothing(client.reconnect_task) && !istaskdone(client.reconnect_task)
+        schedule(client.reconnect_task, InterruptException(); error = true)
+    end
+
     # 关闭 WebSocket 连接
     if !isnothing(client.ws) && isopen(client.ws.io)
         try
@@ -328,8 +361,7 @@ function disconnect!(client::WSClient)
             @warn "关闭 WebSocket 连接时发生错误" exception=e
         end
     end
-    
-    client.connected = false
+
     client.ws = nothing
 end
 
@@ -399,26 +431,36 @@ start_message_loop(client::WSClient)
 启动消息处理循环。
 """
 function start_heartbeat_loop(client::WSClient)
-    @async begin
+    client.heartbeat_task = @async begin
         try
             @info "启动心跳循环"
+            heartbeat_id_counter = 1
             while client.connected && !isnothing(client.ws) && isopen(client.ws.io)
                 sleep(HEARTBEAT_TIMEOUT / 2) # Send heartbeat more frequently than timeout
                 
                 try
                     @debug "发送心跳"
-                    # Heartbeat body is empty
-                    send_request_packet(client, COMMAND_CODE_HEARTBEAT, UInt8[])
+                    
+                    # 创建心跳包
+                    heartbeat_msg = ControlProtocol.Heartbeat(round(Int64, time() * 1000), heartbeat_id_counter)
+                    
+                    # 序列化心跳包
+                    heartbeat_body = ControlProtocol.encode(heartbeat_msg)
+                    
+                    send_request_packet(client, COMMAND_CODE_HEARTBEAT, heartbeat_body)
+                    heartbeat_id_counter += 1
                 catch e
-                    @warn "发送心跳失败" exception=(e, catch_backtrace())
+                    # If the client is no longer connected, this error is expected during shutdown.
+                    # We can safely ignore it and exit the loop.
+                    if client.connected
+                        @warn "发送心跳失败" exception=(e, catch_backtrace())
+                    end
                     # If sending fails, the connection is likely broken. Exit the loop.
                     break
                 end
             end
         catch e
-            if e isa InterruptException
-                @info "心跳循环被中断"
-            else
+            if !(e isa InterruptException)
                 @error "心跳循环异常退出" exception=(e, catch_backtrace())
             end
         finally
@@ -461,7 +503,8 @@ function start_message_loop(client::WSClient)
                 
                     # Format: [reserve(2)] + [gzip(1)] + [verify(1)] + [type(4)]
                     packet_type = header_byte & 0x0F  # Lower 4 bits
-                    @debug "解析header字节" header_byte=header_byte packet_type=packet_type
+                    is_gzipped = (header_byte & 0x20) != 0
+                    @debug "解析header字节" header_byte=header_byte packet_type=packet_type is_gzipped=is_gzipped
 
                     if packet_type == 2  # Response packet
                         # Response格式: [header(1)] + [cmd_code(1)] + [request_id(4)] + [status_code(1)] + [body_len(3)] + [body]
@@ -486,6 +529,10 @@ function start_message_loop(client::WSClient)
                         
                         # 读取包体
                         body = read(io, body_len)
+
+                        if is_gzipped
+                            body = transcode(GzipDecompressor, body)
+                        end
                         
                         # @info "收到响应数据包" cmd=cmd request_id=request_id status_code=status_code body_len=body_len hex_preview=bytes2hex(body[1:20])
                         
@@ -494,6 +541,8 @@ function start_message_loop(client::WSClient)
                             if status_code == 0
                                 client.connected = true  # 只有认证成功后才算真正连接
                                 @info "认证成功，连接已建立"
+                                # 只有在认证成功后才启动心跳
+                                start_heartbeat_loop(client)
                             else
                                 @error "认证失败" status_code=status_code
                                 client.connected = false
@@ -527,8 +576,15 @@ function start_message_loop(client::WSClient)
                         body = read(io, body_len)
                         
                         # @info "收到推送数据包" cmd=cmd body_len=body_len hex_preview=bytes2hex(body[1:20])
-                        
-                        if !isnothing(client.on_push)
+                        if cmd == COMMAND_CODE_CLOSE
+                            close_msg = ControlProtocol.decode(body, ControlProtocol.Close)
+                            @warn "收到服务器关闭连接指令" code=close_msg.code reason=close_msg.reason
+                            disconnect!(client)
+                        elseif cmd == COMMAND_CODE_RECONNECT
+                            reconnect_msg = ControlProtocol.decode(body, ControlProtocol.ReconnectRequest)
+                            @warn "收到服务器重连指令" session_id=reconnect_msg.session_id
+                            reconnect!(client)
+                        elseif !isnothing(client.on_push)
                             try
                                 client.on_push(cmd, body)
                             catch e
@@ -558,6 +614,46 @@ function start_message_loop(client::WSClient)
     end
 end
 
+"""
+reconnect!(client::WSClient)
+
+Handles the reconnection logic for the WebSocket client.
+"""
+function reconnect!(client::WSClient)
+    if !isnothing(client.reconnect_task) && !istaskdone(client.reconnect_task)
+        @warn "重连任务已在进行中"
+        return
+    end
+
+    client.reconnect_task = @async begin
+        disconnect!(client)
+        
+        max_attempts = 5
+        for attempt in 1:max_attempts
+            client.reconnect_attempts = attempt
+            @info "尝试重连 (第 $attempt/$max_attempts 次)..."
+            try
+                connect!(client)
+                if client.connected
+                    @info "重连成功"
+                    client.reconnect_attempts = 0
+                    return
+                end
+            catch e
+                @warn "重连失败" exception=(e, catch_backtrace())
+            end
+            
+            # Exponential backoff
+            sleep_duration = 2.0^attempt
+            @info "等待 $sleep_duration 秒后重试"
+            sleep(sleep_duration)
+        end
+        
+        @error "重连 $max_attempts 次后仍然失败，放弃重连"
+        client.reconnect_attempts = 0
+    end
+end
+
 # ==================== WebSocket Authentication ====================
 
 """
@@ -568,17 +664,13 @@ Automatically gets OTP token for WebSocket authentication.
 """
 function create_auth_request(config::Config.config)::Vector{UInt8}
     # 获取OTP令牌用于WebSocket认证
-    http_client = HttpClient(config)
-    otp_response = get_otp(http_client)
+    otp_response = get_otp(config)
     
     auth_req = ControlProtocol.AuthRequest(
         otp_response.otp,
         Dict("client_version" => Constant.DEFAULT_CLIENT_VERSION) 
     )
-    io_buf = IOBuffer()
-    encoder = ProtoBuf.ProtoEncoder(io_buf)
-    ProtoBuf.encode(encoder, auth_req)
-    return take!(io_buf)
+    return ControlProtocol.encode(auth_req)
 end
 
 # 使用已有WSClient的版本
@@ -590,12 +682,8 @@ function ws_request(
     if !client.connected
         throw(ArgumentError("WebSocket客户端未连接"))
     end
-    
-    # 发送请求并等待响应
-    request_id = client.seq_id
-    
-    # 发送请求（这会自动递增seq_id）
-    send_request_packet(client, command_code, request_body)
+
+    request_id = send_request_packet(client, command_code, request_body)
     
     # 等待响应
     response_key = "quote_response_$(request_id)"
@@ -606,15 +694,26 @@ function ws_request(
     end
     
     if !haskey(client.pending_responses, response_key)
-        throw(Longport.LongportException("请求超时"))
+        throw(LongportException("请求超时"))
     end
     
     status_code, response_body = pop!(client.pending_responses, response_key)
-    
     if status_code != 0
-        throw(Longport.LongportException("API请求失败: $status_code"))
+        # 还需要进一步修改  status_code ∈ [0, 3, 7] ?
+        @debug "尝试解析错误响应" status_code=status_code response_body_length=length(response_body) response_body_hex=bytes2hex(response_body)
+        
+        # 检查response_body是否为空
+        if isempty(response_body)
+            throw(ArgumentError("空的响应体，无法解析错误信息"))
+        end
+        
+        err_proto = ControlProtocol.decode(response_body, ControlProtocol.Error)
+        business_code = err_proto.code
+        business_msg = err_proto.msg # Use the message from the decoded response
+        
+        err_msg = "API请求失败: (协议码=$status_code, 业务码=$business_code) - $business_msg"
+        throw(LongportException(Int(business_code), nothing, err_msg))
     end
-    
     return response_body
 end
 
