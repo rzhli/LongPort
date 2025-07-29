@@ -9,7 +9,7 @@ export TopicType, Execution, OrderStatus, OrderSide, OrderType, OrderTag, TimeIn
        OrderChargeDetail, OrderDetail, BalanceType, EstimateMaxPurchaseQuantityResponse,
        FrozenTransactionFee, CashInfo, AccountBalance, CashFlow, CashFlowDirection,
        FundPositionsResponse, FundPositionChannel, FundPosition, StockPositionsResponse,
-       StockPositionChannel, StockPosition, SubmitOrderResponse
+       StockPositionChannel, StockPosition, SubmitOrderResponse, ExecutionResponse, TodayExecutionResponse
 
 # Enums
 
@@ -589,6 +589,57 @@ struct StockPositionsResponse
     
     function StockPositionsResponse(data::Dict)
         new([StockPositionChannel(ch) for ch in get(data, "channels", [])])
+    end
+end
+
+"""
+Today execution response
+"""
+struct TodayExecutionResponse
+    trades::Vector{Execution}
+    
+    function TodayExecutionResponse(data::Dict)
+        executions = []
+        if haskey(data, "trades")
+            for trade_data in data["trades"]
+                execution = Execution(
+                    get(trade_data, "order_id", ""),
+                    get(trade_data, "trade_id", ""),
+                    get(trade_data, "symbol", ""),
+                    DateTime(get(trade_data, "trade_done_at", "1970-01-01T00:00:00Z")[1:19]),
+                    get(trade_data, "quantity", 0),
+                    get(trade_data, "price", 0.0)
+                )
+                push!(executions, execution)
+            end
+        end
+        new(executions)
+    end
+end
+
+"""
+History execution response
+"""
+struct ExecutionResponse
+    trades::Vector{Execution}
+    has_more::Bool
+    
+    function ExecutionResponse(data::Dict)
+        executions = []
+        if haskey(data, "trades")
+            for trade_data in data["trades"]
+                execution = Execution(
+                    get(trade_data, "order_id", ""),
+                    get(trade_data, "trade_id", ""),
+                    get(trade_data, "symbol", ""),
+                    DateTime(get(trade_data, "trade_done_at", "1970-01-01T00:00:00Z")[1:19]),
+                    get(trade_data, "quantity", 0),
+                    get(trade_data, "price", 0.0)
+                )
+                push!(executions, execution)
+            end
+        end
+        new(executions, get(data, "has_more", false))
     end
 end
 

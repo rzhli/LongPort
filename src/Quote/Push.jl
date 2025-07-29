@@ -1,7 +1,7 @@
 module Push
 
 using ..QuoteTypes
-using ..QuoteProtocol: PushQuote, PushDepth, PushBrokers, PushTransaction
+using ..QuoteProtocol: PushQuote, PushDepth, PushBrokers, PushTrade
 using ..Utils: to_namedtuple
 
 export PushEvent, PushEventDetail, handle_push_event, Callbacks, handle_quote, handle_depth, 
@@ -106,7 +106,7 @@ end
 """
 Handle trades push event - matching Python SDK handle_trades
 """
-function handle_trades(callbacks::Callbacks, symbol::String, trades::PushTransaction)
+function handle_trades(callbacks::Callbacks, symbol::String, trades::PushTrade)
     if !isnothing(callbacks.trades)
         try
             Base.invokelatest(callbacks.trades, symbol, trades)

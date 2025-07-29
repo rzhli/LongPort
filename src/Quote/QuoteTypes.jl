@@ -21,13 +21,15 @@ using Dates
 using ProtoBuf.EnumX: @enumx
 using ..QuoteProtocol: CandlePeriod, TradeSession, TradeStatus
 
-export PushCandestickMode, Candlestick, SecurityQuote, IntradayLine, QuoteTrade,
+export PushCandestickMode, Candlestick, SecurityQuote, Line, QuoteTrade,
        SecurityDepth, Brokers, Depth, OrderBook,
        SubscriptionResponse, PushDepth, PushBrokers, PushTrades,
        PushCandlestick, WarrantType, SortOrderType, WarrantSortBy, WarrantInfo,
+       SecurityIntradayRequest, SecurityIntradayResponse,
        IssuerInfo, MarketTradingSession, MarketTradingDays, TradingSessionInfo,
-       RealtimeQuote, OptionQuote, OptionChainDateStrikeInfo, StrikePriceInfo,
-       IssuerInfoResponse, TradingHours, WarrantQuote, ParticipantInfo
+       RealtimeQuote, OptionQuote,
+       IssuerInfoResponse, TradingHours, WarrantQuote, ParticipantInfo,
+       OptionChainDateListResponse
 
 # Enums
 
@@ -129,7 +131,7 @@ end
 """
 Intraday line
 """
-struct IntradayLine
+struct Line
     price::Float64
     timestamp::DateTime
     volume::Int64
@@ -328,19 +330,7 @@ end
 """
 Strike price information
 """
-struct StrikePriceInfo
-    price::Float64
-    call_symbol::String
-    put_symbol::String
-end
 
-"""
-Option chain date strike information
-"""
-struct OptionChainDateStrikeInfo
-    expiry_date::Date
-    strike_price_info::Vector{StrikePriceInfo}
-end
 
 """
 Issuer information response
@@ -393,6 +383,28 @@ struct ParticipantInfo
     participant_name_cn::String
     participant_name_en::String
     participant_name_hk::String
+end
+
+"""
+Security Intraday Request
+"""
+struct SecurityIntradayRequest
+    symbol::String
+end
+
+"""
+Security Intraday Response
+"""
+struct SecurityIntradayResponse
+    symbol::String
+    lines::Vector{Line}
+end
+
+"""
+Option Chain Date List Response
+"""
+struct OptionChainDateListResponse
+    expiry_date::Vector{Date}
 end
 
 end # module QuoteTypes

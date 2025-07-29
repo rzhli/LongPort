@@ -1,13 +1,9 @@
 """
-Longport Julia SDK - Test Script
+LongPort Julia SDK - Test Script
 (Tests functions individually using the new Actor-based API)
 """
 
-using Longport
-# Load config from TOML file
-cfg = Config.from_toml()
-# Asynchronously create and connect the QuoteContext
-ctx, channel = try_new(cfg)
+
 
 
 # 行情
@@ -28,11 +24,42 @@ resp = warrant_quote(ctx, ["14993.HK", "66642.HK"])
 resp = depth(ctx, "700.HK")
 
 ### 获取标的经纪队列   开盘时再测试
-resp = brokers(ctx, "66642.HK")
+resp = brokers(ctx, "700.HK")
 
 ### 获取券商席位 ID
 resp = participants(ctx)
 
+### 获取标的成交明细
+resp = trades(ctx, "AAPL.US", 500)
+
+### 获取标的当日分时
+resp = intraday(ctx, "700.HK")
+
+# 获取标的历史 K 线
+using Dates
+# after 2023-01-01
+history_offset_data = history_candlesticks_by_offset(
+    ctx, "700.HK", CandlePeriod.DAY, AdjustType.NO_ADJUST, Direction.FORWARD, 10; date=DateTime(2023, 1, 1)
+)
+# before 2023-01-01
+history_offset_data = history_candlesticks_by_offset(
+    ctx, "700.HK", CandlePeriod.DAY, AdjustType.NO_ADJUST, Direction.BACKWARD, 10; date=DateTime(2023, 1, 1)
+)
+# 2023-01-01 to 2023-02-01
+history_date_data = history_candlesticks_by_date(
+    ctx, "700.HK", CandlePeriod.DAY, AdjustType.NO_ADJUST; start_date=Date(2023, 1, 1), end_date=Date(2023, 2, 1)
+)
+
+### 获取标的的期权链到期日列表
+expiry_date = option_chain_expiry_date_list(ctx, "AAPL.US")
+
+### 获取标的的期权链到期日期权标的列表 (需开通OPRA美股期权行情权限)
+info = option_chain_info_by_date(ctx, "AAPL.US", Date(2027-06-17))
+using LongPort, Dates
+# Load config from TOML file
+cfg = Config.from_toml()
+# Asynchronously create and connect the QuoteContext
+ctx, channel = try_new(cfg)
 
 
 
@@ -85,6 +112,7 @@ end
 =#
 candlesticks_data = candlesticks(ctx, "GOOGL.US", CandlePeriod.SIXTY_MINUTE, 365)
 println(candlesticks_data)
+
 
 
 

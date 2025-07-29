@@ -1,6 +1,6 @@
-name = "Longport"
+name = "LongPort"
 uuid = "622b4643-1e26-4658-857c-37e2e088d33f"
-keywords = ["longport", "openapi", "sdk", "finance", "trading"]
+keywords = ["LongPort", "openapi", "sdk", "finance"]
 license = "MIT"
 authors = ["rzhli <tayuebuliuhen@gmail.com>"]
 description = "A Julia library for LongPort Open API"

@@ -12,7 +12,8 @@ using .Push
 
 export TradeContext, submit_order, get_orders, set_on_order_changed, set_on_order_status,
        cancel_order, replace_order, get_account_balance, get_cash_flow, get_fund_positions,
-       get_positions, get_margin_ratio, estimate_max_purchase_quantity
+       get_positions, get_margin_ratio, estimate_max_purchase_quantity, get_executions,
+       get_history_executions, get_order_detail
 
 
 mutable struct TradeContext
@@ -326,6 +327,68 @@ Base.getproperty(ctx::TradeContext, name::Symbol) = begin
         return (callback::Function) -> set_on_order_status(ctx, callback)
     else
         return getfield(ctx, name)
+    end
+end
+
+"""
+get_executions(ctx::TradeContext; symbol::String="", start_time::String="", end_time::String="")
+
+获取今日成交记录
+"""
+function get_executions(ctx::TradeContext; symbol::String="", start_time::String="", end_time::String="")
+    params = Dict{String, String}()
+    
+    !isempty(symbol) && (params["symbol"] = symbol)
+    !isempty(start_time) && (params["start_time"] = start_time)
+    !isempty(end_time) && (params["end_time"] = end_time)
+    
+    try
+        result = Client.get(ctx.config, "/v1/trade/execution/today"; params=params)
+        return haskey(result, "data") && haskey(result.data, "trades") ? result.data.trades : []
+    catch e
+        @error "获取今日成交记录失败" exception=(e, catch_backtrace())
+        rethrow(e)
+    end
+end
+
+"""
+get_history_executions(ctx::TradeContext, start_time::String, end_time::String; symbol::String="", page::Int=1, size::Int=50)
+
+获取历史成交记录
+"""
+function get_history_executions(ctx::TradeContext, start_time::String, end_time::String; symbol::String="", page::Int=1, size::Int=50)
+    params = Dict{String, String}(
+        "start_time" => start_time,
+        "end_time" => end_time,
+        "page" => string(page),
+        "size" => string(size)
+    )
+    
+    !isempty(symbol) && (params["symbol"] = symbol)
+    
+    try
+        result = Client.get(ctx.config, "/v1/trade/execution/history"; params=params)
+        return haskey(result, "data") && haskey(result.data, "trades") ? result.data.trades : []
+    catch e
+        @error "获取历史成交记录失败" exception=(e, catch_backtrace())
+        rethrow(e)
+    end
+end
+
+"""
+get_order_detail(ctx::TradeContext, order_id::String)
+
+获取订单详情
+"""
+function get_order_detail(ctx::TradeContext, order_id::String)
+    params = Dict("order_id" => order_id)
+    
+    try
+        result = Client.get(ctx.config, "/v1/trade/order"; params=params)
+        return haskey(result, "data") ? result.data : nothing
+    catch e
+        @error "获取订单详情失败" order_id=order_id exception=(e, catch_backtrace())
+        rethrow(e)
     end
 end
 

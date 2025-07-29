@@ -1,6 +1,6 @@
-module Longport
+module LongPort
 
-    using TOML
+    using TOML, Dates
     # Core Modules
     include("Core/Constant.jl")
     include("Core/QuoteProtocol.jl")
@@ -35,12 +35,16 @@ module Longport
     export Config, from_toml,
 
             # QuoteProtocol模块
-           QuoteContext, PushQuote,                                   # 结构体类型Struct
-           SubType,                                                 # 枚举类型Enums
-           try_new, disconnect!, realtime_quote, subscribe, unsubscribe, candlesticks,      # 函数
-            
+           QuoteContext, PushQuote,                                                     # 结构体类型Struct
+           SubType, CandlePeriod, AdjustType, Direction,                                      # 枚举类型Enums
+
+           # Quote 模块
+           try_new, disconnect!, realtime_quote, subscribe, unsubscribe, 
+           static_info, depth, brokers, trades, candlesticks,                       # 函数
+           history_candlesticks_by_offset, history_candlesticks_by_date,
+           option_chain_expiry_date_list, option_chain_info_by_date,
            set_on_quote, set_on_depth, set_on_brokers, set_on_trades, set_on_candlestick,
-           static_info, depth, brokers, trades,
+           
            intraday, option_quote, warrant_quote, participants, subscriptions,
            option_chain_dates, option_chain_strikes, warrant_issuers, warrant_filter,
            trading_sessions, trading_days, capital_flow_intraday, capital_flow_distribution,
@@ -55,6 +59,6 @@ module Longport
     const VERSION = TOML.parsefile(joinpath(pkgdir(@__MODULE__), "Project.toml"))["version"]
 
     function __init__()
-        @info "Longport Julia SDK loaded (v$VERSION)"
+        @info "LongPort Julia SDK loaded (v$VERSION)"
     end
-end # module Longport
+end # module LongPort

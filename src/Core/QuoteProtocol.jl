@@ -10,22 +10,26 @@ module QuoteProtocol
     import ProtoBuf: ProtoDecoder, decode, encode, _encoded_size, skip, message_done, decode_tag, default_values, field_numbers
     import Base: show
 
-    export QuoteCommand, SubType, TradeStatus, TradeSession, AdjustType, CandlePeriod,      # 枚举类型Enums
+    export QuoteCommand, SubType, TradeStatus, TradeSession, AdjustType, CandlePeriod, Direction,        # 枚举类型Enums
            SecurityBoard, PushQuoteTag, CalcIndex,
            
            SecurityRequest, MultiSecurityRequest, PrePostQuote, SecurityQuote, SecurityQuoteResponse,         # 结构体类型Struct
            SecurityStaticInfo, SecurityStaticInfoResponse,
            
-           HistoryCandlestickQueryType, Direction,                                                            # 枚举类型Enums
+           HistoryCandlestickQueryType,                                                          # 枚举类型Enums
 
-           Candlestick, SecurityCandlestickRequest, SecurityCandlestickResponse,                              # 结构体类型Struct
+           Candlestick, SecurityCandlestickRequest, SecurityHistoryCandlestickRequest, 
+           SecurityCandlestickResponse,                              # 结构体类型Struct
            QuoteSubscribeRequest, QuoteSubscribeResponse, QuoteUnsubscribeRequest,                            # 结构体类型Struct
            QuoteUnsubscribeResponse,
 
-           Depth, Brokers, Transaction, PushQuote, PushDepth, PushBrokers, PushTransaction,                   # 结构体类型Struct
+           Depth, Brokers, PushQuote, PushDepth, PushBrokers, PushTrade,                   # 结构体类型Struct
            OptionExtend, WarrantExtend, StrikePriceInfo,  SecurityDepthResponse, SecurityBrokersResponse,
+           SecurityTradeRequest, SecurityTradeResponse,
            OptionQuote, OptionQuoteResponse, WarrantQuote, WarrantQuoteResponse, 
-           ParticipantInfo, ParticipantBrokerIdsResponse
+           ParticipantInfo, ParticipantBrokerIdsResponse,
+           SecurityIntradayRequest, SecurityIntradayResponse, Line,
+           OptionChainDateListResponse, OptionChainDateStrikeInfoRequest, OptionChainDateStrikeInfoResponse
            
     # 行情协议指令定义 - 基于api.proto
     @enumx QuoteCommand begin
@@ -214,21 +218,6 @@ module QuoteProtocol
         SGSector         = 24 # 新加坡行业概念
     end
     show(io::IO, x::SecurityBoard.T) = print(io, Symbol(x))
-    # 暂时没用到
-    function parse_board_enum(s::AbstractString)::SecurityBoard.T
-        if isempty(s)
-            return SecurityBoard.UnknownBoard
-        end
-
-        for (val, name) in zip(instances(SecurityBoard.T), string.(instances(SecurityBoard.T)))
-            if s == name
-                return val
-            end
-        end
-
-        @warn "Unknown SecurityBoard value: '$s'"
-        return SecurityBoard.UnknownBoard
-    end
 
     # 基础请求结构
     struct SecurityRequest
@@ -720,6 +709,91 @@ module QuoteProtocol
         return encoded_size
     end
 
+    # 历史K线请求
+    struct OffsetQuery
+        direction::Direction.T
+        date::String
+        minute::String
+        count::Int32
+    end
+    default_values(::Type{OffsetQuery}) = (;direction = Direction.BACKWARD, date = "", minute = "", count = 0)
+    field_numbers(::Type{OffsetQuery}) = (;direction = 1, date = 2, minute = 3, count = 4)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::OffsetQuery)
+        initpos = position(e.io)
+        x.direction != Direction.BACKWARD && encode(e, 1, x.direction)
+        !isempty(x.date) && encode(e, 2, x.date)
+        !isempty(x.minute) && encode(e, 3, x.minute)
+        x.count != 0 && encode(e, 4, x.count)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::OffsetQuery)
+        encoded_size = 0
+        x.direction != Direction.BACKWARD && (encoded_size += _encoded_size(x.direction, 1))
+        !isempty(x.date) && (encoded_size += _encoded_size(x.date, 2))
+        !isempty(x.minute) && (encoded_size += _encoded_size(x.minute, 3))
+        x.count != 0 && (encoded_size += _encoded_size(x.count, 4))
+        return encoded_size
+    end
+
+    struct DateQuery
+        start_date::String
+        end_date::String
+    end
+    default_values(::Type{DateQuery}) = (;start_date = "", end_date = "")
+    field_numbers(::Type{DateQuery}) = (;start_date = 1, end_date = 2)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::DateQuery)
+        initpos = position(e.io)
+        !isempty(x.start_date) && encode(e, 1, x.start_date)
+        !isempty(x.end_date) && encode(e, 2, x.end_date)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::DateQuery)
+        encoded_size = 0
+        !isempty(x.start_date) && (encoded_size += _encoded_size(x.start_date, 1))
+        !isempty(x.end_date) && (encoded_size += _encoded_size(x.end_date, 2))
+        return encoded_size
+    end
+
+    struct SecurityHistoryCandlestickRequest
+        symbol::String
+        period::CandlePeriod.T
+        adjust_type::AdjustType.T
+        query_type::HistoryCandlestickQueryType.T
+        offset_request::Union{OffsetQuery, Nothing}
+        date_request::Union{DateQuery, Nothing}
+        trade_session::TradeSession.T
+    end
+    default_values(::Type{SecurityHistoryCandlestickRequest}) = (;symbol = "", period = CandlePeriod.UNKNOWN_PERIOD, adjust_type = AdjustType.NO_ADJUST, query_type = HistoryCandlestickQueryType.UNKNOWN_QUERY_TYPE, offset_request = nothing, date_request = nothing, trade_session = TradeSession.Intraday)
+    field_numbers(::Type{SecurityHistoryCandlestickRequest}) = (;symbol = 1, period = 2, adjust_type = 3, query_type = 4, offset_request = 5, date_request = 6, trade_session = 7)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::SecurityHistoryCandlestickRequest)
+        initpos = position(e.io)
+        !isempty(x.symbol) && encode(e, 1, x.symbol)
+        x.period != CandlePeriod.UNKNOWN_PERIOD && encode(e, 2, x.period)
+        x.adjust_type != AdjustType.NO_ADJUST && encode(e, 3, x.adjust_type)
+        x.query_type != HistoryCandlestickQueryType.UNKNOWN_QUERY_TYPE && encode(e, 4, x.query_type)
+        x.offset_request !== nothing && encode(e, 5, x.offset_request)
+        x.date_request !== nothing && encode(e, 6, x.date_request)
+        x.trade_session != TradeSession.Intraday && encode(e, 7, x.trade_session)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::SecurityHistoryCandlestickRequest)
+        encoded_size = 0
+        !isempty(x.symbol) && (encoded_size += _encoded_size(x.symbol, 1))
+        x.period != CandlePeriod.UNKNOWN_PERIOD && (encoded_size += _encoded_size(x.period, 2))
+        x.adjust_type != AdjustType.NO_ADJUST && (encoded_size += _encoded_size(x.adjust_type, 3))
+        x.query_type != HistoryCandlestickQueryType.UNKNOWN_QUERY_TYPE && (encoded_size += _encoded_size(x.query_type, 4))
+        x.offset_request !== nothing && (encoded_size += _encoded_size(x.offset_request, 5))
+        x.date_request !== nothing && (encoded_size += _encoded_size(x.date_request, 6))
+        x.trade_session != TradeSession.Intraday && (encoded_size += _encoded_size(x.trade_session, 7))
+        return encoded_size
+    end
+
     # K线响应
     struct SecurityCandlestickResponse
         symbol::String
@@ -922,19 +996,19 @@ module QuoteProtocol
     end
 
     # 成交明细
-    struct Transaction
-        price::String
+    struct Trade
+        price::Float64
         volume::Int64
         timestamp::Int64
         trade_type::String
         direction::Int64
         trade_session::TradeSession.T
     end
-    default_values(::Type{Transaction}) = (;price = "", volume = zero(Int64), timestamp = zero(Int64), trade_type = "", direction = zero(Int64), trade_session = TradeSession.Intraday)
-    field_numbers(::Type{Transaction}) = (;price = 1, volume = 2, timestamp = 3, trade_type = 4, direction = 5, trade_session = 6)
+    default_values(::Type{Trade}) = (;price = 0.0, volume = zero(Int64), timestamp = zero(Int64), trade_type = "", direction = zero(Int64), trade_session = TradeSession.Intraday)
+    field_numbers(::Type{Trade}) = (;price = 1, volume = 2, timestamp = 3, trade_type = 4, direction = 5, trade_session = 6)
 
-    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Transaction})
-        price = ""
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Trade})
+        price = 0.0
         volume = zero(Int64)
         timestamp = zero(Int64)
         trade_type = ""
@@ -943,7 +1017,7 @@ module QuoteProtocol
         while !message_done(d)
             field_number, wire_type = decode_tag(d)
             if field_number == 1
-                price = decode(d, String)
+                price = parse(Float64, decode(d, String))
             elseif field_number == 2
                 volume = decode(d, Int64)
             elseif field_number == 3
@@ -958,7 +1032,7 @@ module QuoteProtocol
                 skip(d, wire_type)
             end
         end
-        return Transaction(price, volume, timestamp, trade_type, direction, trade_session)
+        return Trade(price, volume, timestamp, trade_type, direction, trade_session)
     end
 
     # 推送行情数据
@@ -1112,18 +1186,18 @@ module QuoteProtocol
     end
 
     # 推送成交明细数据
-    struct PushTransaction
+    struct PushTrade
         symbol::String
         sequence::Int64
-        transaction::Vector{Transaction}
+        trade::Vector{Trade}
     end
-    default_values(::Type{PushTransaction}) = (;symbol = "", sequence = zero(Int64), transaction = Transaction[])
-    field_numbers(::Type{PushTransaction}) = (;symbol = 1, sequence = 2, transaction = 3)
+    default_values(::Type{PushTrade}) = (;symbol = "", sequence = zero(Int64), trade = Trade[])
+    field_numbers(::Type{PushTrade}) = (;symbol = 1, sequence = 2, trade = 3)
 
-    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:PushTransaction})
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:PushTrade})
         symbol = ""
         sequence = zero(Int64)
-        transaction = Transaction[]
+        trade = Trade[]
         while !message_done(d)
             field_number, wire_type = decode_tag(d)
             if field_number == 1
@@ -1133,12 +1207,12 @@ module QuoteProtocol
             elseif field_number == 3
                 len = decode(d, UInt64)
                 sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
-                push!(transaction, decode(sub_d, Transaction))
+                push!(trade, decode(sub_d, Trade))
             else
                 skip(d, wire_type)
             end
         end
-        return PushTransaction(symbol, sequence, transaction)
+        return PushTrade(symbol, sequence, trade)
     end
 
     # 期权扩展信息
@@ -1434,39 +1508,6 @@ module QuoteProtocol
         return WarrantQuoteResponse(secu_quote)
     end
 
-
-    # 行权价信息
-    struct StrikePriceInfo
-        price::String
-        call_symbol::String
-        put_symbol::String
-        standard::ProtoBuf.Bool
-    end
-    default_values(::Type{StrikePriceInfo}) = (;price = "", call_symbol = "", put_symbol = "", standard = false)
-    field_numbers(::Type{StrikePriceInfo}) = (;price = 1, call_symbol = 2, put_symbol = 3, standard = 4)
-
-    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:StrikePriceInfo})
-        price = ""
-        call_symbol = ""
-        put_symbol = ""
-        standard = false
-        while !message_done(d)
-            field_number, wire_type = decode_tag(d)
-            if field_number == 1
-                price = decode(d, String)
-            elseif field_number == 2
-                call_symbol = decode(d, String)
-            elseif field_number == 3
-                put_symbol = decode(d, String)
-            elseif field_number == 4
-                standard = decode(d, Bool)
-            else
-                skip(d, wire_type)
-            end
-        end
-        return StrikePriceInfo(price, call_symbol, put_symbol, standard)
-    end
-
     # 证券盘口响应
     struct SecurityDepthResponse
         symbol::String
@@ -1533,6 +1574,55 @@ module QuoteProtocol
         return SecurityBrokersResponse(symbol, ask_brokers, bid_brokers)
     end
 
+    # 查询成交明细请求
+    struct SecurityTradeRequest
+        symbol::String
+        count::Int32
+    end
+    default_values(::Type{SecurityTradeRequest}) = (;symbol = "", count = zero(Int32))
+    field_numbers(::Type{SecurityTradeRequest}) = (;symbol = 1, count = 2)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::SecurityTradeRequest)
+        initpos = position(e.io)
+        !isempty(x.symbol) && encode(e, 1, x.symbol)
+        x.count != 0 && encode(e, 2, x.count)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::SecurityTradeRequest)
+        encoded_size = 0
+        !isempty(x.symbol) && (encoded_size += _encoded_size(x.symbol, 1))
+        x.count != 0 && (encoded_size += _encoded_size(x.count, 2))
+        return encoded_size
+    end
+
+    # 查询成交明细响应
+    struct SecurityTradeResponse
+        symbol::String
+        trades::Vector{Trade}
+    end
+    SecurityTradeResponse() = SecurityTradeResponse("", Trade[])
+    default_values(::Type{SecurityTradeResponse}) = (;symbol = "", trades = Trade[])
+    field_numbers(::Type{SecurityTradeResponse}) = (;symbol = 1, trades = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:SecurityTradeResponse})
+        symbol = ""
+        trades = Trade[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                symbol = decode(d, String)
+            elseif field_number == 2
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(trades, decode(sub_d, Trade))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return SecurityTradeResponse(symbol, trades)
+    end
+
     struct ParticipantInfo
         broker_ids::Vector{Int64}
         participant_name_cn::String
@@ -1588,4 +1678,181 @@ module QuoteProtocol
         return ParticipantBrokerIdsResponse(participant_broker_numbers)
     end
 
+    # 分时数据
+    struct Line
+        price::Float64
+        timestamp::Int64
+        volume::Int64
+        turnover::Float64
+        avg_price::Float64
+    end
+    default_values(::Type{Line}) = (;price = 0.0, timestamp = zero(Int64), volume = zero(Int64), turnover = 0.0, avg_price = 0.0)
+    field_numbers(::Type{Line}) = (;price = 1, timestamp = 2, volume = 3, turnover = 4, avg_price = 5)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Line})
+        price = 0.0
+        timestamp = zero(Int64)
+        volume = zero(Int64)
+        turnover = 0.0
+        avg_price = 0.0
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                price = parse(Float64, decode(d, String))
+            elseif field_number == 2
+                timestamp = decode(d, Int64)
+            elseif field_number == 3
+                volume = decode(d, Int64)
+            elseif field_number == 4
+                turnover = parse(Float64, decode(d, String))
+            elseif field_number == 5
+                avg_price = parse(Float64, decode(d, String))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return Line(price, timestamp, volume, turnover, avg_price)
+    end
+
+    # 查询当日分时请求
+    struct SecurityIntradayRequest
+        symbol::String
+    end
+    default_values(::Type{SecurityIntradayRequest}) = (;symbol = "")
+    field_numbers(::Type{SecurityIntradayRequest}) = (;symbol = 1)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::SecurityIntradayRequest)
+        initpos = position(e.io)
+        !isempty(x.symbol) && encode(e, 1, x.symbol)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::SecurityIntradayRequest)
+        encoded_size = 0
+        !isempty(x.symbol) && (encoded_size += _encoded_size(x.symbol, 1))
+        return encoded_size
+    end
+
+    # 查询当日分时响应
+    struct SecurityIntradayResponse
+        symbol::String
+        lines::Vector{Line}
+    end
+    SecurityIntradayResponse() = SecurityIntradayResponse("", Line[])
+    default_values(::Type{SecurityIntradayResponse}) = (;symbol = "", lines = Line[])
+    field_numbers(::Type{SecurityIntradayResponse}) = (;symbol = 1, lines = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:SecurityIntradayResponse})
+        symbol = ""
+        lines = Line[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                symbol = decode(d, String)
+            elseif field_number == 2
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(lines, decode(sub_d, Line))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return SecurityIntradayResponse(symbol, lines)
+    end
+
+    struct OptionChainDateListResponse
+        expiry_date::Vector{Date}
+    end
+    default_values(::Type{OptionChainDateListResponse}) = (;expiry_date = Date[])
+    field_numbers(::Type{OptionChainDateListResponse}) = (;expiry_date = 1)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:OptionChainDateListResponse})
+        expiry_date = Date[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                push!(expiry_date, Date(decode(d, String), "yyyymmdd"))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return OptionChainDateListResponse(expiry_date)
+    end
+
+    struct OptionChainDateStrikeInfoRequest
+        symbol::String
+        expiry_date::Date
+    end
+    default_values(::Type{OptionChainDateStrikeInfoRequest}) = (;symbol = "", expiry_date = Date(1970,1,1))
+    field_numbers(::Type{OptionChainDateStrikeInfoRequest}) = (;symbol = 1, expiry_date = 2)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::OptionChainDateStrikeInfoRequest)
+        initpos = position(e.io)
+        !isempty(x.symbol) && encode(e, 1, x.symbol)
+        date_str = Dates.format(x.expiry_date, "yyyymmdd")
+        !isempty(date_str) && encode(e, 2, date_str)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::OptionChainDateStrikeInfoRequest)
+        encoded_size = 0
+        !isempty(x.symbol) && (encoded_size += _encoded_size(x.symbol, 1))
+        date_str = Dates.format(x.expiry_date, "yyyymmdd")
+        !isempty(date_str) && (encoded_size += _encoded_size(date_str, 2))
+        return encoded_size
+    end
+
+    # 行权价信息
+    struct StrikePriceInfo
+        price::Float64
+        call_symbol::String
+        put_symbol::String
+        standard::Bool
+    end
+    default_values(::Type{StrikePriceInfo}) = (;price = 0.0, call_symbol = "", put_symbol = "", standard = false)
+    field_numbers(::Type{StrikePriceInfo}) = (;price = 1, call_symbol = 2, put_symbol = 3, standard = 4)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:StrikePriceInfo})
+        price = 0.0
+        call_symbol = ""
+        put_symbol = ""
+        standard = false
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                price = parse(Float64, decode(d, String))
+            elseif field_number == 2
+                call_symbol = decode(d, String)
+            elseif field_number == 3
+                put_symbol = decode(d, String)
+            elseif field_number == 4
+                standard = decode(d, Bool)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return StrikePriceInfo(price, call_symbol, put_symbol, standard)
+    end
+
+    struct OptionChainDateStrikeInfoResponse
+        strike_price_info::Vector{StrikePriceInfo}
+    end
+    OptionChainDateStrikeInfoResponse() = OptionChainDateStrikeInfoResponse(StrikePriceInfo[])
+    default_values(::Type{OptionChainDateStrikeInfoResponse}) = (;strike_price_info = StrikePriceInfo[])
+    field_numbers(::Type{OptionChainDateStrikeInfoResponse}) = (;strike_price_info = 1)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:OptionChainDateStrikeInfoResponse})
+        strike_price_info = StrikePriceInfo[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(strike_price_info, decode(sub_d, StrikePriceInfo))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return OptionChainDateStrikeInfoResponse(strike_price_info)
+    end
 end # module

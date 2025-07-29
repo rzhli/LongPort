@@ -2,12 +2,15 @@ module Quote
 
 using ProtoBuf, JSON3, Dates, Logging, DataFrames
 using ..Config, ..QuoteTypes, ..Push, ..Client, ..QuoteProtocol, ..ControlProtocol
-using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCommand, 
+using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCommand, Direction,
         SecurityCandlestickRequest, SecurityCandlestickResponse, QuoteSubscribeRequest,
         QuoteSubscribeResponse, QuoteUnsubscribeRequest, QuoteUnsubscribeResponse, 
         MultiSecurityRequest, SecurityQuoteResponse, SecurityRequest, SecurityDepthResponse,
         SecurityStaticInfo, SecurityStaticInfoResponse, OptionQuoteResponse, 
-        WarrantQuoteResponse, SecurityBrokersResponse, ParticipantBrokerIdsResponse
+        WarrantQuoteResponse, SecurityBrokersResponse, ParticipantBrokerIdsResponse,
+        SecurityTradeRequest, SecurityTradeResponse, SecurityIntradayRequest, SecurityIntradayResponse,
+        SecurityHistoryCandlestickRequest, OffsetQuery, DateQuery, HistoryCandlestickQueryType,
+        OptionChainDateListResponse, OptionChainDateStrikeInfoRequest, OptionChainDateStrikeInfoResponse
         
 using ..Client: WSClient
 using ..Cache: SimpleCache, CacheWithKey, get_or_update
@@ -25,13 +28,16 @@ Base.setproperty!(arc::Arc, sym::Symbol, x) = setproperty!(getfield(arc, :value)
 
 export QuoteContext, 
        try_new, disconnect!,
-       realtime_quote, subscribe, unsubscribe, candlesticks,
+       realtime_quote, subscribe, unsubscribe, static_info, depth, intraday,
+       brokers, trades, candlesticks,
+       history_candlesticks_by_offset, history_candlesticks_by_date, 
+       option_chain_expiry_date_list, option_chain_info_by_date,
        set_on_quote, set_on_depth, set_on_brokers, set_on_trades, set_on_candlestick,
-       static_info, depth, brokers, trades,
-       intraday, option_quote, warrant_quote, participants, subscriptions,
+       
+       option_quote, warrant_quote, participants, subscriptions,
        option_chain_dates, option_chain_strikes, warrant_issuers, warrant_filter,
        trading_sessions, trading_days, capital_flow_intraday, capital_flow_distribution,
-       calc_indexes, member_id, quote_level
+       calc_indexes, member_id, quote_level, option_chain_expiry_date_list
 
 # --- Command Types for the Core Actor ---
 abstract type AbstractCommand end
@@ -170,7 +176,7 @@ function handle_command(inner::InnerQuoteContext, cmd::AbstractCommand)
                     resp = cmd.response_type() # Return empty response object
                 end
             else
-                # @info "Received response body" cmd_code=cmd.cmd_code hex_body=bytes2hex(resp_body) length(resp_body)
+                @info "Received response body" cmd_code=cmd.cmd_code hex_body=bytes2hex(resp_body) length(resp_body)
                 decoder = ProtoBuf.ProtoDecoder(IOBuffer(resp_body))
                 resp = ProtoBuf.decode(decoder, cmd.response_type)
             end
@@ -210,7 +216,7 @@ function dispatch_push_events(ctx::QuoteContext, push_rx::Channel)
                 data = ProtoBuf.decode(decoder, QuoteProtocol.PushBrokers)
                 Push.handle_brokers(callbacks, data.symbol, data)
             elseif command == QuoteCommand.PushTradeData
-                data = ProtoBuf.decode(decoder, QuoteProtocol.PushTransaction)
+                data = ProtoBuf.decode(decoder, QuoteProtocol.PushTrade)
                 Push.handle_trades(callbacks, data.symbol, data)
             else
                 # @warn "Unknown push command" cmd=cmd_code
@@ -341,10 +347,93 @@ function candlesticks(
             high = c.high,
             volume = c.volume,
             turnover = c.turnover,
-            timestamp = c.timestamp
+            timestamp = unix2datetime(c.timestamp)
         )
     end
     return DataFrame(data)
+end
+
+function history_candlesticks_by_offset(
+    ctx::QuoteContext, symbol::String, period::CandlePeriod.T, adjust_type::AdjustType.T, direction::Direction.T, count::Int; 
+    date::Union{DateTime, Nothing}=nothing, trade_sessions::TradeSession.T=TradeSession.Intraday
+    )
+    
+    offset_request = OffsetQuery(
+        direction, 
+        isnothing(date) ? "" : Dates.format(date, "yyyymmdd"), 
+        isnothing(date) ? "" : Dates.format(date, "HHMM"), 
+        count
+    )
+
+    req = SecurityHistoryCandlestickRequest(symbol, period, adjust_type, HistoryCandlestickQueryType.QUERY_BY_OFFSET, offset_request, nothing, trade_sessions)
+    cmd = GenericRequestCmd(QuoteCommand.QueryHistoryCandlestick, req, SecurityCandlestickResponse, Channel(1))
+    resp = request(ctx, cmd)
+
+    data = map(resp.candlesticks) do c
+        (
+            symbol = resp.symbol,
+            close = c.close,
+            open = c.open,
+            low = c.low,
+            high = c.high,
+            volume = c.volume,
+            turnover = c.turnover,
+            timestamp = unix2datetime(c.timestamp)
+        )
+    end
+    return DataFrame(data)
+end
+
+function history_candlesticks_by_date(
+    ctx::QuoteContext, symbol::String, period::CandlePeriod.T, adjust_type::AdjustType.T; 
+    start_date::Union{Date, Nothing}=nothing, end_date::Union{Date, Nothing}=nothing, trade_sessions::TradeSession.T=TradeSession.Intraday
+    )
+
+    date_request = DateQuery(
+        isnothing(start_date) ? "" : Dates.format(start_date, "yyyymmdd"),
+        isnothing(end_date) ? "" : Dates.format(end_date, "yyyymmdd")
+    )
+
+    req = SecurityHistoryCandlestickRequest(symbol, period, adjust_type, HistoryCandlestickQueryType.QUERY_BY_DATE, nothing, date_request, trade_sessions)
+    cmd = GenericRequestCmd(QuoteCommand.QueryHistoryCandlestick, req, SecurityCandlestickResponse, Channel(1))
+    resp = request(ctx, cmd)
+
+    data = map(resp.candlesticks) do c
+        (
+            symbol = resp.symbol,
+            close = c.close,
+            open = c.open,
+            low = c.low,
+            high = c.high,
+            volume = c.volume,
+            turnover = c.turnover,
+            timestamp = unix2datetime(c.timestamp)
+        )
+    end
+    return DataFrame(data)
+end
+
+function depth(ctx::QuoteContext, symbol::String)
+    req = SecurityRequest(symbol)
+    cmd = GenericRequestCmd(QuoteCommand.QueryDepth, req, SecurityDepthResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return (symbol = resp.symbol, ask = to_namedtuple(resp.ask), bid = to_namedtuple(resp.bid))
+end
+
+function participants(ctx::QuoteContext)
+    req = Vector{UInt8}()
+    cmd = GenericRequestCmd(QuoteCommand.QueryParticipantBrokerIds, req, ParticipantBrokerIdsResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return to_namedtuple(resp.participant_broker_numbers)
+end
+
+function subscriptions(ctx::QuoteContext)
+    req = Vector{UInt8}()  # Empty request body for subscription query
+    cmd = GenericRequestCmd(QuoteCommand.Subscription, req, QuoteSubscribeResponse, Channel(1))
+    resp = request(ctx, cmd)
+    
+    # Return subscriptions in a structured format
+    return [(symbol = s, sub_types = resp.sub_types) for s in resp.symbols]
 end
 
 function static_info(ctx::QuoteContext, symbols::Vector{String})
@@ -355,8 +444,10 @@ function static_info(ctx::QuoteContext, symbols::Vector{String})
 end
 
 function trades(ctx::QuoteContext, symbol::String, count::Int)
-    cmd = HttpGetCmd("/v1/quote/trades", Dict("symbol" => symbol, "count" => count), Channel(1))
-    return request(ctx, cmd)
+    req = SecurityTradeRequest(symbol, count)
+    cmd = GenericRequestCmd(QuoteCommand.QueryTrade, req, SecurityTradeResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return (symbol = resp.symbol, trades = to_namedtuple(resp.trades))
 end
 
 function brokers(ctx::QuoteContext, symbol::String)
@@ -367,8 +458,25 @@ function brokers(ctx::QuoteContext, symbol::String)
 end
 
 function intraday(ctx::QuoteContext, symbol::String)
-    cmd = HttpGetCmd("/v1/quote/intraday", Dict("symbol" => symbol), Channel(1))
-    return request(ctx, cmd)
+    req = SecurityIntradayRequest(symbol)
+    cmd = GenericRequestCmd(QuoteCommand.QueryIntraday, req, SecurityIntradayResponse, Channel(1))
+    resp = request(ctx, cmd)
+
+    return (symbol = resp.symbol, lines = to_namedtuple(resp.lines))
+end
+
+function option_chain_expiry_date_list(ctx::QuoteContext, symbol::String)
+    req = SecurityRequest(symbol)
+    cmd = GenericRequestCmd(QuoteCommand.QueryOptionChainDate, req, OptionChainDateListResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return resp.expiry_date
+end
+
+function option_chain_info_by_date(ctx::QuoteContext, symbol::String, expiry_date::Date)
+    req = OptionChainDateStrikeInfoRequest(symbol, expiry_date)
+    cmd = GenericRequestCmd(QuoteCommand.QueryOptionChainDateStrikeInfo, req, OptionChainDateStrikeInfoResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return to_namedtuple(resp.strike_price_info)
 end
 
 # --- Additional Market Data Endpoints ---
@@ -451,28 +559,7 @@ function calc_indexes(ctx::QuoteContext, symbols::Vector{String}, indexes::Vecto
 end
 
 
-function depth(ctx::QuoteContext, symbol::String)
-    req = SecurityRequest(symbol)
-    cmd = GenericRequestCmd(QuoteCommand.QueryDepth, req, SecurityDepthResponse, Channel(1))
-    resp = request(ctx, cmd)
-    return (symbol = resp.symbol, ask = to_namedtuple(resp.ask), bid = to_namedtuple(resp.bid))
-end
 
-function participants(ctx::QuoteContext)
-    req = Vector{UInt8}()
-    cmd = GenericRequestCmd(QuoteCommand.QueryParticipantBrokerIds, req, ParticipantBrokerIdsResponse, Channel(1))
-    resp = request(ctx, cmd)
-    return to_namedtuple(resp.participant_broker_numbers)
-end
-
-function subscriptions(ctx::QuoteContext)
-    req = Vector{UInt8}()  # Empty request body for subscription query
-    cmd = GenericRequestCmd(QuoteCommand.Subscription, req, QuoteSubscribeResponse, Channel(1))
-    resp = request(ctx, cmd)
-    
-    # Return subscriptions in a structured format
-    return [(symbol = s, sub_types = resp.sub_types) for s in resp.symbols]
-end
 
 function option_quote(ctx::QuoteContext, symbols::Vector{String})
     req = MultiSecurityRequest(symbols)
