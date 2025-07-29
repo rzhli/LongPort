@@ -1,25 +1,26 @@
 # Longport Julia SDK
 
-Longport Julia SDK 是一个用于访问 Longport 金融数据和交易服务的 Julia 客户端库，基于全新的 Actor 架构设计。
+Longport Julia SDK 是一个用于访问 Longport 金融数据和交易服务的 Julia 客户端库
 
-## 功能特性
+### 配置文件
 
-### 行情服务
-- 获取标的基础信息
-- 获取股票实时行情
-- 获取期权实时行情
-- 获取轮证实时行情
-- 获取标的盘口数据
-- 获取经纪队列信息
-- 获取券商席位信息
-- K线数据获取
-- 实时行情订阅与推送
+创建 `config.toml` 文件：
 
-### 技术特性
-- **Actor-based API**: 基于现代 Actor 模型的全新架构
-- **实时推送**: 支持多种类型的实时行情数据推送
-- **多市场支持**: 支持美股、港股等多个市场
-- **高效传输**: 使用 Protocol Buffers 进行高效的二进制数据传输
+```toml
+# 必填项
+base_url = "https://openapi.longportapp.com"
+app_key = "your_app_key"
+app_secret = "your_app_secret"
+access_token = "your_access_token"
+
+# 推荐填写（辅助管理）
+token_expire_time = 2025-07-22T00:00:00Z  # ISO8601格式，UTC时间
+
+# 可选项（不填使用默认）
+language = "zh_CN"
+enable_overnight = false    # 需要订阅美股LV1实时行情
+push_candlestick_mode = "Realtime"
+```
 
 ## 快速开始
 
@@ -84,26 +85,6 @@ sleep(10)
 unsubscribe(ctx, ["GOOGL.US"], [SubType.QUOTE, SubType.DEPTH])
 ```
 
-### 配置文件
-
-创建 `config.toml` 文件：
-
-```toml
-# 必填项
-base_url = "https://openapi.longportapp.com"
-app_key = "your_app_key"
-app_secret = "your_app_secret"
-access_token = "your_access_token"
-
-# 推荐填写（辅助管理）
-token_expire_time = 2025-07-22T00:00:00Z  # ISO8601格式，UTC时间
-
-# 可选项（不填使用默认）
-language = "zh_CN"
-enable_overnight = true
-push_candlestick_mode = "Realtime"
-```
-
 ## API 概览
 
 ### 上下文管理
@@ -125,16 +106,6 @@ push_candlestick_mode = "Realtime"
 - `set_on_quote(ctx, callback)`: 设置行情推送的回调函数。
 - `subscribe(ctx, symbols, sub_types)`: 订阅行情。
 - `unsubscribe(ctx, symbols, sub_types)`: 取消订阅。
-
-## 技术特性
-
-- **WebSocket 支持**: 实时行情和交易数据推送
-- **认证安全**: 自动获取 OTP 令牌进行 WebSocket 认证
-- **自动重连**: 连接断开时自动重连
-- **多市场支持**: 支持美股、港股、A股等多个市场
-- **Protocol Buffers**: 高效的二进制数据传输
-- **配置管理**: 灵活的配置文件管理
-- **区域自适应**: 根据网络位置自动选择最优服务器
 
 ## 许可证
 
