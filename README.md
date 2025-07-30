@@ -3,9 +3,9 @@
 
 参考文档：
 
-[官方文档](https://open.longportapp.com/zh-CN/docs)
+1. [官方文档](https://open.longportapp.com/zh-CN/docs)
 
-[OpenAPI SDK Base](https://github.com/longportapp/openapi)
+2. [OpenAPI SDK Base](https://github.com/longportapp/openapi)
 
 ### 配置文件
 
