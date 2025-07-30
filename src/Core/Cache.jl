@@ -18,8 +18,8 @@ mutable struct CacheItem{T}
     data::T
     expires_at::DateTime
     
-    function CacheItem{T}(data::T, ttl_seconds::Float64) where T
-        new(data, now() + Second(floor(Int, ttl_seconds)))
+    function CacheItem(data::T, ttl_seconds::Float64) where {T}
+        new{T}(data, now() + Second(floor(Int, ttl_seconds)))
     end
 end
 
@@ -29,7 +29,7 @@ SimpleCache
 简单缓存，用于缓存单个值。
 """
 mutable struct SimpleCache{T}
-    item::Union{Nothing, CacheItem{T}}
+    item::Union{Nothing, CacheItem}
     ttl_seconds::Float64
     
     function SimpleCache{T}(ttl_seconds::Float64) where T
@@ -90,7 +90,7 @@ function get_or_update(update_func::Function, cache::SimpleCache{T})::T where T
     # 缓存过期或不存在，更新缓存
     try
         new_data = update_func()
-        cache.item = CacheItem{T}(new_data, cache.ttl_seconds)
+        cache.item = CacheItem(new_data, cache.ttl_seconds)
         return new_data
     catch e
         # 如果更新失败，且有旧缓存，则返回旧缓存
@@ -134,7 +134,7 @@ function get_or_update(cache::CacheWithKey{K, V}, key::K, update_func::Function)
     # 缓存过期或不存在，更新缓存
     try
         new_data = update_func(key)
-        cache.items[key] = CacheItem{V}(new_data, cache.ttl_seconds)
+        cache.items[key] = CacheItem(new_data, cache.ttl_seconds)
         return new_data
     catch e
         # 如果更新失败，且有旧缓存，则返回旧缓存

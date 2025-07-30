@@ -1,7 +1,7 @@
 module Quote
 
 using ProtoBuf, JSON3, Dates, Logging, DataFrames
-using ..Config, ..QuoteTypes, ..Push, ..Client, ..QuoteProtocol, ..ControlProtocol
+using ..Config, ..Push, ..Client, ..QuoteProtocol, ..ControlProtocol, ..Constant
 using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCommand, Direction,
         SecurityCandlestickRequest, SecurityCandlestickResponse, QuoteSubscribeRequest,
         QuoteSubscribeResponse, QuoteUnsubscribeRequest, QuoteUnsubscribeResponse, 
@@ -10,12 +10,16 @@ using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCom
         WarrantQuoteResponse, SecurityBrokersResponse, ParticipantBrokerIdsResponse,
         SecurityTradeRequest, SecurityTradeResponse, SecurityIntradayRequest, SecurityIntradayResponse,
         SecurityHistoryCandlestickRequest, OffsetQuery, DateQuery, HistoryCandlestickQueryType,
-        OptionChainDateListResponse, OptionChainDateStrikeInfoRequest, OptionChainDateStrikeInfoResponse
+        OptionChainDateListResponse, OptionChainDateStrikeInfoRequest, OptionChainDateStrikeInfoResponse,
+        IssuerInfoResponse, WarrantFilterListRequest, FilterConfig, WarrantFilterListResponse,
+        FilterWarrantExpiryDate, FilterWarrantInOutBoundsType, WarrantStatus, WarrantType, 
+        SortOrderType, WarrantSortBy, MarketTradePeriodResponse, MarketTradeDayRequest, MarketTradeDayResponse,
+        CapitalFlowIntradayRequest, CapitalFlowIntradayResponse
         
 using ..Client: WSClient
 using ..Cache: SimpleCache, CacheWithKey, get_or_update
 using ..Utils: to_namedtuple
-using ..Constant: Language
+
 import ..Errors:LongportException
 
 # A simple wrapper to mimic Rust's Arc for shared ownership semantics
@@ -35,8 +39,8 @@ export QuoteContext,
        set_on_quote, set_on_depth, set_on_brokers, set_on_trades, set_on_candlestick,
        
        option_quote, warrant_quote, participants, subscriptions,
-       option_chain_dates, option_chain_strikes, warrant_issuers, warrant_filter,
-       trading_sessions, trading_days, capital_flow_intraday, capital_flow_distribution,
+       option_chain_dates, option_chain_strikes, warrant_issuers, warrant_list,
+       trading_session, trading_days, capital_flow, capital_distribution,
        calc_indexes, member_id, quote_level, option_chain_expiry_date_list
 
 # --- Command Types for the Core Actor ---
@@ -72,7 +76,7 @@ mutable struct InnerQuoteContext
     cache_issuers::SimpleCache{Vector{Any}}
     cache_option_chain_expiry_dates::CacheWithKey{String, Vector{Any}}
     cache_option_chain_strike_info::CacheWithKey{Tuple{String, Any}, Vector{Any}}
-    cache_trading_sessions::SimpleCache{Vector{Any}}
+    cache_trading_sessions::SimpleCache{Any}
 
     # Info from Core
     member_id::Int64
@@ -176,7 +180,7 @@ function handle_command(inner::InnerQuoteContext, cmd::AbstractCommand)
                     resp = cmd.response_type() # Return empty response object
                 end
             else
-                @info "Received response body" cmd_code=cmd.cmd_code hex_body=bytes2hex(resp_body) length(resp_body)
+                # @info "Received response body" cmd_code=cmd.cmd_code hex_body=bytes2hex(resp_body) length(resp_body)
                 decoder = ProtoBuf.ProtoDecoder(IOBuffer(resp_body))
                 resp = ProtoBuf.decode(decoder, cmd.response_type)
             end
@@ -259,7 +263,7 @@ function try_new(config::Config.config)
         SimpleCache{Vector{Any}}(1800.0),
         CacheWithKey{String, Vector{Any}}(1800.0),
         CacheWithKey{Tuple{String, Any}, Vector{Any}}(1800.0),
-        SimpleCache{Vector{Any}}(7200.0),
+        SimpleCache{Any}(7200.0),
         # Core info
         0, "",
     )
@@ -496,56 +500,74 @@ end
 
 function warrant_issuers(ctx::QuoteContext)
     """Get warrant issuer information"""
-    return get_or_update(ctx.inner.cache_issuers) do
-        result = Client.get(ctx.inner.config, "/v1/quote/warrant-issuers")
-        haskey(result, "data") ? result.data : []
-    end
+    req = Vector{UInt8}()
+    cmd = GenericRequestCmd(QuoteCommand.QueryWarrantIssuerInfo, req, IssuerInfoResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return to_namedtuple(resp.issuer_info)
 end
 
-function warrant_filter(ctx::QuoteContext; symbol::String="", issuer_id::String="", 
-                       warrant_type::String="", sort_by::String="", sort_order::String="")
+function warrant_list(
+    ctx::QuoteContext,
+    symbol::String,
+    sort_by::WarrantSortBy.T,
+    sort_order::SortOrderType.T;
+    warrant_type::Union{Nothing,Vector{WarrantType.T}} = nothing,
+    issuer::Union{Nothing,Vector{Int32}} = nothing,
+    expiry_date::Union{Nothing,Vector{FilterWarrantExpiryDate.T}} = nothing,
+    price_type::Union{Nothing,Vector{FilterWarrantInOutBoundsType.T}} = nothing,
+    status::Union{Nothing,Vector{WarrantStatus.T}} = nothing,
+    language::Language = Constant.EN,
+)
     """Filter warrants based on criteria"""
-    params = Dict{String, String}()
-    !isempty(symbol) && (params["symbol"] = symbol)
-    !isempty(issuer_id) && (params["issuer_id"] = issuer_id)
-    !isempty(warrant_type) && (params["warrant_type"] = warrant_type)
-    !isempty(sort_by) && (params["sort_by"] = sort_by)
-    !isempty(sort_order) && (params["sort_order"] = sort_order)
-    
-    cmd = HttpGetCmd("/v1/quote/warrant-filter", params, Channel(1))
-    return request(ctx, cmd)
+    filter_config = FilterConfig(
+        sort_by,
+        sort_order,
+        0, # sort_offset
+        20, # sort_count
+        isnothing(warrant_type) ? WarrantType.T[] : warrant_type,
+        isnothing(issuer) ? Int32[] : issuer,
+        isnothing(expiry_date) ? FilterWarrantExpiryDate.T[] : expiry_date,
+        isnothing(price_type) ? FilterWarrantInOutBoundsType.T[] : price_type,
+        isnothing(status) ? WarrantStatus.T[] : status,
+    )
+    req = WarrantFilterListRequest(symbol, filter_config, Int32(language))
+    cmd = GenericRequestCmd(QuoteCommand.QueryWarrantFilterList, req, WarrantFilterListResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return (warrant_list = to_namedtuple(resp.warrant_list), total_count = resp.total_count)
 end
 
-function trading_sessions(ctx::QuoteContext, market::String="")
-    """Get trading sessions information"""
+function trading_session(ctx::QuoteContext)
+    """Get trading session of the day"""
     return get_or_update(ctx.inner.cache_trading_sessions) do
-        params = isempty(market) ? Dict{String, String}() : Dict("market" => market)
-        result = Client.get(ctx.inner.config, "/v1/quote/trading-sessions"; params=params)
-        haskey(result, "data") ? result.data : []
+        req = Vector{UInt8}()
+        cmd = GenericRequestCmd(QuoteCommand.QueryMarketTradePeriod, req, MarketTradePeriodResponse, Channel(1))
+        resp = request(ctx, cmd)
+        to_namedtuple(resp.market_trade_session)
     end
 end
 
-function trading_days(ctx::QuoteContext, market::String, start_date::String, end_date::String)
+function trading_days(ctx::QuoteContext, market::String, start_date::Date, end_date::Date)
     """Get trading days for a market within date range"""
-    params = Dict(
-        "market" => market,
-        "start_date" => start_date, 
-        "end_date" => end_date
-    )
-    cmd = HttpGetCmd("/v1/quote/trading-days", params, Channel(1))
-    return request(ctx, cmd)
+    req = MarketTradeDayRequest(market, start_date, end_date)
+    cmd = GenericRequestCmd(QuoteCommand.QueryMarketTradeDay, req, MarketTradeDayResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return to_namedtuple(resp)
 end
 
-function capital_flow_intraday(ctx::QuoteContext, symbol::String)
+function capital_flow(ctx::QuoteContext, symbol::String)
     """Get intraday capital flow for a symbol"""
-    cmd = HttpGetCmd("/v1/quote/capital-flow-intraday", Dict("symbol" => symbol), Channel(1))
-    return request(ctx, cmd)
+    req = CapitalFlowIntradayRequest(symbol)
+    cmd = GenericRequestCmd(QuoteCommand.QueryCapitalFlowIntraday, req, CapitalFlowIntradayResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return (symbol = resp.symbol, lines = to_namedtuple(resp.capital_flow_lines))
 end
 
-function capital_flow_distribution(ctx::QuoteContext, symbol::String)
+function capital_distribution(ctx::QuoteContext, symbol::String)
     """Get capital flow distribution for a symbol"""
-    cmd = HttpGetCmd("/v1/quote/capital-flow-distribution", Dict("symbol" => symbol), Channel(1))
-    return request(ctx, cmd)
+    req = SecurityRequest(symbol)
+    cmd = GenericRequestCmd(QuoteCommand.QueryCapitalFlowDistribution, req, CapitalDistributionResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return to_namedtuple(resp)
 end
 
 function calc_indexes(ctx::QuoteContext, symbols::Vector{String}, indexes::Vector{String})
@@ -557,8 +579,6 @@ function calc_indexes(ctx::QuoteContext, symbols::Vector{String}, indexes::Vecto
     cmd = HttpGetCmd("/v1/quote/calc-indexes", params, Channel(1))
     return request(ctx, cmd)
 end
-
-
 
 
 function option_quote(ctx::QuoteContext, symbols::Vector{String})

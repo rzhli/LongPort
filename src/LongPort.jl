@@ -36,18 +36,19 @@ module LongPort
 
             # QuoteProtocol模块
            QuoteContext, PushQuote,                                                     # 结构体类型Struct
-           SubType, CandlePeriod, AdjustType, Direction,                                      # 枚举类型Enums
+           SubType, CandlePeriod, AdjustType, Direction, WarrantSortBy, SortOrderType,     # 枚举类型Enums
 
            # Quote 模块
            try_new, disconnect!, realtime_quote, subscribe, unsubscribe, 
            static_info, depth, brokers, trades, candlesticks,                       # 函数
            history_candlesticks_by_offset, history_candlesticks_by_date,
            option_chain_expiry_date_list, option_chain_info_by_date,
+           warrant_list, trading_session, trading_days, 
            set_on_quote, set_on_depth, set_on_brokers, set_on_trades, set_on_candlestick,
            
            intraday, option_quote, warrant_quote, participants, subscriptions,
            option_chain_dates, option_chain_strikes, warrant_issuers, warrant_filter,
-           trading_sessions, trading_days, capital_flow_intraday, capital_flow_distribution,
+           capital_flow, capital_distribution
            calc_indexes, member_id, quote_level
 
            # Trade module

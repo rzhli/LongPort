@@ -21,16 +21,16 @@ resp = option_quote(ctx, ["AAPL230317P160000.US"])
 resp = warrant_quote(ctx, ["14993.HK", "66642.HK"])
 
 ### 获取标的盘口
-resp = depth(ctx, "700.HK")
+symbol, ask, bid = depth(ctx, "700.HK")
 
-### 获取标的经纪队列   开盘时再测试
+### 获取标的经纪队列 （返回空值, 盘中再测试）
 resp = brokers(ctx, "700.HK")
 
 ### 获取券商席位 ID
 resp = participants(ctx)
 
 ### 获取标的成交明细
-resp = trades(ctx, "AAPL.US", 500)
+symbol, trades = trades(ctx, "AAPL.US", 500)
 
 ### 获取标的当日分时
 resp = intraday(ctx, "700.HK")
@@ -53,14 +53,32 @@ history_date_data = history_candlesticks_by_date(
 ### 获取标的的期权链到期日列表
 expiry_date = option_chain_expiry_date_list(ctx, "AAPL.US")
 
-### 获取标的的期权链到期日期权标的列表 (需开通OPRA美股期权行情权限)
+### 获取标的的期权链到期日期权标的列表 (返回空值，需开通OPRA美股期权行情权限？)
 info = option_chain_info_by_date(ctx, "AAPL.US", Date(2027-06-17))
+
+### 获取轮证发行商 ID
+resp = warrant_issuers(ctx)
+
+### 获取轮证筛选列表
+resp = warrant_list(ctx, "700.HK", WarrantSortBy.LastDone, SortOrderType.Descending)
+resp.warrant_list[end].expiry_date
+### 获取各市场当日交易时段
+resp = trading_session(ctx)
+
+### 获取市场交易日
+trade_day, half_trade_day = trading_days(ctx, "HK", Date(2025, 8, 1), Date(2025, 8, 30))
+
+### 获取标的当日资金流向
+symbol, lines = capital_flow(ctx, "700.HK")
+
+### 获取标的当日资金分布
+symbol, timestamp, capital_in, capital_out = capital_distribution(ctx, "700.HK")
+
 using LongPort, Dates
 # Load config from TOML file
 cfg = Config.from_toml()
 # Asynchronously create and connect the QuoteContext
 ctx, channel = try_new(cfg)
-
 
 
 

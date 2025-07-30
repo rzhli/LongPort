@@ -600,10 +600,10 @@ function start_message_loop(client::WSClient)
                     @info "消息循环被中断"
                 elseif e isa EOFError
                     @info "WebSocket正常关闭"
-                    client.connected = false
+                    disconnect!(client)
                 else
                     @error "消息循环异常" exception=(e, catch_backtrace())
-                    client.connected = false
+                    disconnect!(client)
                 end
             end            
         catch e

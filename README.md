@@ -1,7 +1,8 @@
-# Longport Julia SDK
-
-Longport Julia SDK 是一个用于访问 Longport 金融数据和交易服务的 Julia 客户端库
-
+# LongPort Julia SDK
+非官方，目前仅自用，欢迎提issues
+参考文档：
+官方文档：https://open.longportapp.com/zh-CN/docs
+OpenAPI SDK Base：https://github.com/longportapp/openapi
 ### 配置文件
 
 创建 `config.toml` 文件：
@@ -28,13 +29,13 @@ push_candlestick_mode = "Realtime"
 
 ```julia
 using Pkg
-Pkg.add("Longport")
+Pkg.add("LongPort")
 ```
 
 ### 基本使用
 
 ```julia
-using Longport
+using LongPort
 
 # 从 TOML 配置文件加载配置
 cfg = Config.from_toml()
@@ -59,6 +60,27 @@ resp = depth(ctx, "700.HK")
 
 # 获取K线数据
 candlesticks_data = candlesticks(ctx, "GOOGL.US", CandlePeriod.SIXTY_MINUTE, 365)
+
+# 获取标的成交明细
+trades_data = trades(ctx, "AAPL.US", 10)
+
+# 获取标的当日分时
+intraday_data = intraday(ctx, "700.HK")
+
+# 获取标的历史 K 线
+using Dates
+history_data = history_candlesticks_by_date(
+    ctx, "700.HK", CandlePeriod.DAY, AdjustType.NO_ADJUST; start_date=Date(2023, 1, 1), end_date=Date(2023, 2, 1)
+)
+
+# 获取标的的期权链到期日列表
+expiry_dates = option_chain_expiry_date_list(ctx, "AAPL.US")
+
+# 获取市场交易日
+trade_days, half_trade_days = trading_days(ctx, "HK", Date(2025, 8, 1), Date(2025, 8, 30))
+
+# 获取标的当日资金流向
+capital_flow_data = capital_flow(ctx, "700.HK")
 
 # 断开连接
 disconnect!(ctx)
@@ -100,6 +122,16 @@ unsubscribe(ctx, ["GOOGL.US"], [SubType.QUOTE, SubType.DEPTH])
 - `depth(ctx, symbol)`: 获取标的盘口数据。
 - `brokers(ctx, symbol)`: 获取标的经纪队列。
 - `participants(ctx)`: 获取券商席位 ID 列表。
+- `trades(ctx, symbol, count)`: 获取标的成交明细。
+- `intraday(ctx, symbol)`: 获取标的当日分时数据。
+- `history_candlesticks_by_date(ctx, ...)`: 按日期获取历史 K 线。
+- `option_chain_expiry_date_list(ctx, symbol)`: 获取期权链到期日列表。
+- `warrant_issuers(ctx)`: 获取轮证发行商 ID 列表。
+- `warrant_list(ctx, ...)`: 获取轮证筛选列表。
+- `trading_session(ctx)`: 获取各市场当日交易时段。
+- `trading_days(ctx, market, start_date, end_date)`: 获取市场交易日。
+- `capital_flow(ctx, symbol)`: 获取标的当日资金流向。
+- `capital_distribution(ctx, symbol)`: 获取标的当日资金分布。
 - `candlesticks(ctx, symbol, period, count)`: 获取 K 线数据。
 
 ### 实时行情订阅

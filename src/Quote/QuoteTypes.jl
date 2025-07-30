@@ -22,66 +22,19 @@ using ProtoBuf.EnumX: @enumx
 using ..QuoteProtocol: CandlePeriod, TradeSession, TradeStatus
 
 export PushCandestickMode, Candlestick, SecurityQuote, Line, QuoteTrade,
-       SecurityDepth, Brokers, Depth, OrderBook,
-       SubscriptionResponse, PushDepth, PushBrokers, PushTrades,
+       SubscriptionResponse, PushTrades,
        PushCandlestick, WarrantType, SortOrderType, WarrantSortBy, WarrantInfo,
-       SecurityIntradayRequest, SecurityIntradayResponse,
-       IssuerInfo, MarketTradingSession, MarketTradingDays, TradingSessionInfo,
+       SecurityIntradayResponse,
+       MarketTradingSession, MarketTradingDays, TradingSessionInfo,
        RealtimeQuote, OptionQuote,
-       IssuerInfoResponse, TradingHours, WarrantQuote, ParticipantInfo,
+       TradingHours, WarrantQuote, ParticipantInfo,
        OptionChainDateListResponse
 
 # Enums
 
 # SubType and AdjustType are now imported from QuoteProtocol to avoid conflicts
 
-"""
-Warrant type
-"""
-@enumx WarrantType begin
-    UnknownWarrantType = 0
-    Call = 1
-    Put = 2
-    Bull = 3
-    Bear = 4
-    Inline = 5
-end
 
-"""
-Sort order type
-"""
-@enumx SortOrderType begin
-    Ascending = 0
-    Descending = 1
-end
-
-"""
-Warrant sort by field
-"""
-@enumx WarrantSortBy begin
-    LastDone = 0
-    ChangeRate = 1
-    ChangeValue = 2
-    Volume = 3
-    Turnover = 4
-    ExpiryDate = 5
-    StrikePrice = 6
-    UpperStrikePrice = 7
-    LowerStrikePrice = 8
-    OutstandingQuantity = 9
-    OutstandingRatio = 10
-    Premium = 11
-    ItmOtm = 12
-    ImpliedVolatility = 13
-    Delta = 14
-    CallPrice = 15
-    ToCallPrice = 16
-    EffectiveLeverage = 17
-    LeverageRatio = 18
-    ConversionRatio = 19
-    BalancePoint = 20
-    Status = 21
-end
 
 # Data Structures
 
@@ -151,41 +104,7 @@ struct QuoteTrade
     trade_session::TradeSession.T
 end
 
-"""
-Depth information
-"""
-struct Depth
-    position::Int32
-    price::Float64
-    volume::Int64
-    order_num::Int32
-end
 
-"""
-Security depth
-"""
-struct SecurityDepth
-    asks::Vector{Depth}
-    bids::Vector{Depth}
-end
-
-"""
-Brokers information
-"""
-struct Brokers
-    position::Int32
-    broker_ids::Vector{Int32}
-end
-
-"""
-Order book
-"""
-struct OrderBook
-    symbol::String
-    sequence::Int64
-    asks::Vector{Depth}
-    bids::Vector{Depth}
-end
 
 """
 Subscription response
@@ -197,26 +116,6 @@ struct SubscriptionResponse
     current::Vector{String}
 end
 
-
-"""
-Push depth
-"""
-struct PushDepth
-    symbol::String
-    sequence::Int64
-    asks::Vector{Depth}
-    bids::Vector{Depth}
-end
-
-"""
-Push brokers
-"""
-struct PushBrokers
-    symbol::String
-    sequence::Int64
-    ask_brokers::Vector{Brokers}
-    bid_brokers::Vector{Brokers}
-end
 
 """
 Push trades
@@ -266,15 +165,6 @@ struct WarrantInfo
     status::TradeStatus.T
 end
 
-"""
-Issuer information
-"""
-struct IssuerInfo
-    issuer_id::Int32
-    name_cn::String
-    name_en::String
-    name_hk::String
-end
 
 """
 Trading session information
@@ -332,12 +222,6 @@ Strike price information
 """
 
 
-"""
-Issuer information response
-"""
-struct IssuerInfoResponse
-    issuer_info::Vector{IssuerInfo}
-end
 
 """
 Trading hours
@@ -385,12 +269,6 @@ struct ParticipantInfo
     participant_name_hk::String
 end
 
-"""
-Security Intraday Request
-"""
-struct SecurityIntradayRequest
-    symbol::String
-end
 
 """
 Security Intraday Response

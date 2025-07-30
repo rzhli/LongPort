@@ -11,7 +11,8 @@ module QuoteProtocol
     import Base: show
 
     export QuoteCommand, SubType, TradeStatus, TradeSession, AdjustType, CandlePeriod, Direction,        # 枚举类型Enums
-           SecurityBoard, PushQuoteTag, CalcIndex,
+           SecurityBoard, PushQuoteTag, CalcIndex, FilterWarrantExpiryDate, FilterWarrantInOutBoundsType,
+           WarrantStatus, WarrantType, WarrantSortBy, SortOrderType,
            
            SecurityRequest, MultiSecurityRequest, PrePostQuote, SecurityQuote, SecurityQuoteResponse,         # 结构体类型Struct
            SecurityStaticInfo, SecurityStaticInfoResponse,
@@ -29,7 +30,13 @@ module QuoteProtocol
            OptionQuote, OptionQuoteResponse, WarrantQuote, WarrantQuoteResponse, 
            ParticipantInfo, ParticipantBrokerIdsResponse,
            SecurityIntradayRequest, SecurityIntradayResponse, Line,
-           OptionChainDateListResponse, OptionChainDateStrikeInfoRequest, OptionChainDateStrikeInfoResponse
+           OptionChainDateListResponse, OptionChainDateStrikeInfoRequest, OptionChainDateStrikeInfoResponse,
+           IssuerInfo, IssuerInfoResponse, WarrantFilterListRequest, FilterConfig,
+           WarrantFilterListResponse, FilterWarrant,
+           MarketTradePeriodResponse, MarketTradePeriod, TradePeriod,
+           MarketTradeDayRequest, MarketTradeDayResponse,
+           CapitalFlowLine, CapitalFlowIntradayRequest, CapitalFlowIntradayResponse,
+           CapitalDistribution, CapitalDistributionResponse
            
     # 行情协议指令定义 - 基于api.proto
     @enumx QuoteCommand begin
@@ -218,6 +225,75 @@ module QuoteProtocol
         SGSector         = 24 # 新加坡行业概念
     end
     show(io::IO, x::SecurityBoard.T) = print(io, Symbol(x))
+
+    @enumx FilterWarrantExpiryDate begin
+        LT_3 = 1
+        Between_3_6 = 2
+        Between_6_12 = 3
+        GT_12 = 4
+    end
+    show(io::IO, x::FilterWarrantExpiryDate.T) = print(io, Symbol(x))
+
+    @enumx FilterWarrantInOutBoundsType begin
+        In = 1
+        Out = 2
+    end
+    show(io::IO, x::FilterWarrantInOutBoundsType.T) = print(io, Symbol(x))
+
+    @enumx WarrantStatus begin
+        Suspend = 2
+        PrepareList = 3
+        Normal = 4
+    end
+    show(io::IO, x::WarrantStatus.T) = print(io, Symbol(x))
+
+    """
+    Warrant type
+    """
+    @enumx WarrantType begin
+        UnknownWarrantType = 0
+        Call = 1
+        Put = 2
+        Bull = 3
+        Bear = 4
+        Inline = 5
+    end
+
+    """
+    Sort order type
+    """
+    @enumx SortOrderType begin
+        Ascending = 0
+        Descending = 1
+    end
+
+    """
+    Warrant sort by field
+    """
+    @enumx WarrantSortBy begin
+        LastDone = 0
+        ChangeRate = 1
+        ChangeValue = 2
+        Volume = 3
+        Turnover = 4
+        ExpiryDate = 5
+        StrikePrice = 6
+        UpperStrikePrice = 7
+        LowerStrikePrice = 8
+        OutstandingQuantity = 9
+        OutstandingRatio = 10
+        Premium = 11
+        ItmOtm = 12
+        ImpliedVolatility = 13
+        Delta = 14
+        CallPrice = 15
+        ToCallPrice = 16
+        EffectiveLeverage = 17
+        LeverageRatio = 18
+        ConversionRatio = 19
+        BalancePoint = 20
+        Status = 21
+    end
 
     # 基础请求结构
     struct SecurityRequest
@@ -714,7 +790,7 @@ module QuoteProtocol
         direction::Direction.T
         date::String
         minute::String
-        count::Int32
+        count::Int64
     end
     default_values(::Type{OffsetQuery}) = (;direction = Direction.BACKWARD, date = "", minute = "", count = 0)
     field_numbers(::Type{OffsetQuery}) = (;direction = 1, date = 2, minute = 3, count = 4)
@@ -1577,9 +1653,9 @@ module QuoteProtocol
     # 查询成交明细请求
     struct SecurityTradeRequest
         symbol::String
-        count::Int32
+        count::Int64
     end
-    default_values(::Type{SecurityTradeRequest}) = (;symbol = "", count = zero(Int32))
+    default_values(::Type{SecurityTradeRequest}) = (;symbol = "", count = zero(Int64))
     field_numbers(::Type{SecurityTradeRequest}) = (;symbol = 1, count = 2)
 
     function encode(e::ProtoBuf.AbstractProtoEncoder, x::SecurityTradeRequest)
@@ -1854,5 +1930,550 @@ module QuoteProtocol
             end
         end
         return OptionChainDateStrikeInfoResponse(strike_price_info)
+    end
+
+    struct IssuerInfo
+        id::Int64
+        name_cn::String
+        name_en::String
+        name_hk::String
+    end
+    default_values(::Type{IssuerInfo}) = (;id = zero(Int64), name_cn = "", name_en = "", name_hk = "")
+    field_numbers(::Type{IssuerInfo}) = (;id = 1, name_cn = 2, name_en = 3, name_hk = 4)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:IssuerInfo})
+        id = zero(Int64)
+        name_cn = ""
+        name_en = ""
+        name_hk = ""
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                id = decode(d, Int64)
+            elseif field_number == 2
+                name_cn = decode(d, String)
+            elseif field_number == 3
+                name_en = decode(d, String)
+            elseif field_number == 4
+                name_hk = decode(d, String)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return IssuerInfo(id, name_cn, name_en, name_hk)
+    end
+
+    struct IssuerInfoResponse
+        issuer_info::Vector{IssuerInfo}
+    end
+    IssuerInfoResponse() = IssuerInfoResponse(IssuerInfo[])
+    default_values(::Type{IssuerInfoResponse}) = (;issuer_info = IssuerInfo[])
+    field_numbers(::Type{IssuerInfoResponse}) = (;issuer_info = 1)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:IssuerInfoResponse})
+        issuer_info = IssuerInfo[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(issuer_info, decode(sub_d, IssuerInfo))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return IssuerInfoResponse(issuer_info)
+    end
+
+
+
+
+
+
+
+    """
+    Order book
+    """
+    struct OrderBook
+        symbol::String
+        sequence::Int64
+        asks::Vector{Depth}
+        bids::Vector{Depth}
+    end
+    struct FilterConfig
+        sort_by::WarrantSortBy.T
+        sort_order::SortOrderType.T
+        sort_offset::Int64
+        sort_count::Int64
+        type::Vector{WarrantType.T}
+        issuer::Vector{Int64}
+        expiry_date::Vector{FilterWarrantExpiryDate.T}
+        price_type::Vector{FilterWarrantInOutBoundsType.T}
+        status::Vector{WarrantStatus.T}
+    end
+    default_values(::Type{FilterConfig}) = (;sort_by = WarrantSortBy.LastDone, sort_order = SortOrderType.Ascending, sort_offset = zero(Int64), sort_count = zero(Int64), type = WarrantType.T[], issuer = Int64[], expiry_date = FilterWarrantExpiryDate.T[], price_type = FilterWarrantInOutBoundsType.T[], status = WarrantStatus.T[])
+    field_numbers(::Type{FilterConfig}) = (;sort_by = 1, sort_order = 2, sort_offset = 3, sort_count = 4, type = 5, issuer = 6, expiry_date = 7, price_type = 8, status = 9)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::FilterConfig)
+        initpos = position(e.io)
+        x.sort_by != 0 && encode(e, 1, x.sort_by)
+        x.sort_order != 0 && encode(e, 2, x.sort_order)
+        x.sort_offset != 0 && encode(e, 3, x.sort_offset)
+        x.sort_count != 0 && encode(e, 4, x.sort_count)
+        !isempty(x.type) && encode(e, 5, x.type)
+        !isempty(x.issuer) && encode(e, 6, x.issuer)
+        !isempty(x.expiry_date) && encode(e, 7, x.expiry_date)
+        !isempty(x.price_type) && encode(e, 8, x.price_type)
+        !isempty(x.status) && encode(e, 9, x.status)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::FilterConfig)
+        encoded_size = 0
+        x.sort_by != 0 && (encoded_size += _encoded_size(x.sort_by, 1))
+        x.sort_order != 0 && (encoded_size += _encoded_size(x.sort_order, 2))
+        x.sort_offset != 0 && (encoded_size += _encoded_size(x.sort_offset, 3))
+        x.sort_count != 0 && (encoded_size += _encoded_size(x.sort_count, 4))
+        !isempty(x.type) && (encoded_size += _encoded_size(x.type, 5))
+        !isempty(x.issuer) && (encoded_size += _encoded_size(x.issuer, 6))
+        !isempty(x.expiry_date) && (encoded_size += _encoded_size(x.expiry_date, 7))
+        !isempty(x.price_type) && (encoded_size += _encoded_size(x.price_type, 8))
+        !isempty(x.status) && (encoded_size += _encoded_size(x.status, 9))
+        return encoded_size
+    end
+
+    struct WarrantFilterListRequest
+        symbol::String
+        filter_config::FilterConfig
+        language::Int64
+    end
+    default_values(::Type{WarrantFilterListRequest}) = (;symbol = "", filter_config = FilterConfig(WarrantSortBy.LastDone, SortOrderType.Ascending, 0, 0, [], [], [], [], []), language = 0)
+    field_numbers(::Type{WarrantFilterListRequest}) = (;symbol = 1, filter_config = 2, language = 3)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::WarrantFilterListRequest)
+        initpos = position(e.io)
+        !isempty(x.symbol) && encode(e, 1, x.symbol)
+        encode(e, 2, x.filter_config)
+        x.language != 0 && encode(e, 3, x.language)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::WarrantFilterListRequest)
+        encoded_size = 0
+        !isempty(x.symbol) && (encoded_size += _encoded_size(x.symbol, 1))
+        encoded_size += _encoded_size(x.filter_config, 2)
+        x.language != 0 && (encoded_size += _encoded_size(x.language, 3))
+        return encoded_size
+    end
+
+    struct FilterWarrant
+        symbol::String
+        name::String
+        last_done::Float64                                   # 最新价
+        change_rate::Float64                                 # 涨跌幅
+        change_val::Float64                                  # 涨跌额
+        volume::Int64                                       # 成交量
+        turnover::Float64                                    # 成交额
+        expiry_date::Date                                   # 到期日
+        strike_price::Float64                                # 行权价
+        upper_strike_price::Float64                          # 上限价
+        lower_strike_price::Float64                          # 下限价
+        outstanding_qty::Int64                             # 街货量
+        outstanding_ratio::Float64                           # 街货比
+        premium::Float64                                     # 溢价率
+        itm_otm::Float64                                     # 价内/价外
+        implied_volatility::Float64                          # 引伸波幅
+        delta::Float64                                       # 对冲值
+        call_price::Float64                                  # 收回价
+        to_call_price::Float64                               # 距收回价
+        effective_leverage::Float64                          # 有效杠杆
+        leverage_ratio::Float64                              # 杠杆比率
+        conversion_ratio::Float64                            # 换股比率
+        balance_point::Float64                               # 打和点
+        status::Int64                                        # 状态状态，可选值：2-终止交易，3-等待上市，4-正常交易
+    end
+    default_values(::Type{FilterWarrant}) = (;symbol = "", name = "", last_done = 0.0, change_rate = 0.0, change_val = 0.0, volume = zero(Int64), turnover = 0.0, expiry_date = Date(1970,1,1), strike_price = 0.0, upper_strike_price = 0.0, lower_strike_price = 0.0, outstanding_qty = zero(Int64), outstanding_ratio = 0.0, premium = 0.0, itm_otm = 0.0, implied_volatility = 0.0, delta = 0.0, call_price = 0.0, to_call_price = 0.0, effective_leverage = 0.0, leverage_ratio = 0.0, conversion_ratio = 0.0, balance_point = 0.0, status = zero(Int64))
+    field_numbers(::Type{FilterWarrant}) = (;symbol = 1, name = 2, last_done = 3, change_rate = 4, change_val = 5, volume = 6, turnover = 7, expiry_date = 8, strike_price = 9, upper_strike_price = 10, lower_strike_price = 11, outstanding_qty = 12, outstanding_ratio = 13, premium = 14, itm_otm = 15, implied_volatility = 16, delta = 17, call_price = 18, to_call_price = 19, effective_leverage = 20, leverage_ratio = 21, conversion_ratio = 22, balance_point = 23, status = 24)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:FilterWarrant})
+        symbol = ""
+        name = ""
+        last_done = 0.0
+        change_rate = 0.0
+        change_val = 0.0
+        volume = zero(Int64)
+        turnover = 0.0
+        expiry_date = Date(1970,1,1)
+        strike_price = 0.0
+        upper_strike_price = 0.0
+        lower_strike_price = 0.0
+        outstanding_qty = zero(Int64)
+        outstanding_ratio = 0.0
+        premium = 0.0
+        itm_otm = 0.0
+        implied_volatility = 0.0
+        delta = 0.0
+        call_price = 0.0
+        to_call_price = 0.0
+        effective_leverage = 0.0
+        leverage_ratio = 0.0
+        conversion_ratio = 0.0
+        balance_point = 0.0
+        status = zero(Int64)
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                symbol = decode(d, String)
+            elseif field_number == 2
+                name = decode(d, String)
+            elseif field_number == 3
+                last_done = parse(Float64, decode(d, String))
+            elseif field_number == 4
+                change_rate = parse(Float64, decode(d, String))
+            elseif field_number == 5
+                change_val = parse(Float64, decode(d, String))
+            elseif field_number == 6
+                volume = decode(d, Int64)
+            elseif field_number == 7
+                turnover = parse(Float64, decode(d, String))
+            elseif field_number == 8
+                expiry_date = Date(decode(d, String), "yyyymmdd")
+            elseif field_number == 9
+                strike_price = parse(Float64, decode(d, String))
+            elseif field_number == 10
+                upper_strike_price = parse(Float64, decode(d, String))
+            elseif field_number == 11
+                lower_strike_price = parse(Float64, decode(d, String))
+            elseif field_number == 12
+                outstanding_qty = parse(Int64, decode(d, String))
+            elseif field_number == 13
+                outstanding_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 14
+                premium = parse(Float64, decode(d, String))
+            elseif field_number == 15
+                itm_otm = parse(Float64, decode(d, String))
+            elseif field_number == 16
+                implied_volatility = parse(Float64, decode(d, String))
+            elseif field_number == 17
+                delta = parse(Float64, decode(d, String))
+            elseif field_number == 18
+                call_price = parse(Float64, decode(d, String))
+            elseif field_number == 19
+                to_call_price = parse(Float64, decode(d, String))
+            elseif field_number == 20
+                effective_leverage = parse(Float64, decode(d, String))
+            elseif field_number == 21
+                leverage_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 22
+                conversion_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 23
+                balance_point = parse(Float64, decode(d, String))
+            elseif field_number == 24
+                status = decode(d, Int64)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return FilterWarrant(symbol, name, last_done, change_rate, change_val, volume, turnover, expiry_date, strike_price, upper_strike_price, lower_strike_price, outstanding_qty, outstanding_ratio, premium, itm_otm, implied_volatility, delta, call_price, to_call_price, effective_leverage, leverage_ratio, conversion_ratio, balance_point, status)
+    end
+
+    struct WarrantFilterListResponse
+        warrant_list::Vector{FilterWarrant}
+        total_count::Int64
+    end
+    default_values(::Type{WarrantFilterListResponse}) = (;warrant_list = FilterWarrant[], total_count = zero(Int64))
+    field_numbers(::Type{WarrantFilterListResponse}) = (;warrant_list = 1, total_count = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:WarrantFilterListResponse})
+        warrant_list = FilterWarrant[]
+        total_count = zero(Int64)
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(warrant_list, decode(sub_d, FilterWarrant))
+            elseif field_number == 2
+                total_count = decode(d, Int64)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return WarrantFilterListResponse(warrant_list, total_count)
+    end
+
+    # 交易时段信息
+    struct TradePeriod
+        beg_time::Int64
+        end_time::Int64
+        trade_session::TradeSession.T
+    end
+    default_values(::Type{TradePeriod}) = (;beg_time = Int64(0), end_time = Int64(0), trade_session = TradeSession.Intraday)
+    field_numbers(::Type{TradePeriod}) = (;beg_time = 1, end_time = 2, trade_session = 3)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:TradePeriod})
+        beg_time = Int64(0)
+        end_time = Int64(0)
+        trade_session = TradeSession.Intraday
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                beg_time = decode(d, Int64)
+            elseif field_number == 2
+                end_time = decode(d, Int64)
+            elseif field_number == 3
+                trade_session = TradeSession.T(decode(d, Int64))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return TradePeriod(beg_time, end_time, trade_session)
+    end
+
+    # 市场交易时段信息
+    struct MarketTradePeriod
+        market::String
+        trade_session::Vector{TradePeriod}
+    end
+    MarketTradePeriod() = MarketTradePeriod("", TradePeriod[])
+    default_values(::Type{MarketTradePeriod}) = (;market = "", trade_session = TradePeriod[])
+    field_numbers(::Type{MarketTradePeriod}) = (;market = 1, trade_session = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:MarketTradePeriod})
+        market = ""
+        trade_session = TradePeriod[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                market = decode(d, String)
+            elseif field_number == 2
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(trade_session, decode(sub_d, TradePeriod))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return MarketTradePeriod(market, trade_session)
+    end
+
+    # 查询各市场的当日交易时段响应
+    struct MarketTradePeriodResponse
+        market_trade_session::Vector{MarketTradePeriod}
+    end
+    MarketTradePeriodResponse() = MarketTradePeriodResponse(MarketTradePeriod[])
+    default_values(::Type{MarketTradePeriodResponse}) = (;market_trade_session = MarketTradePeriod[])
+    field_numbers(::Type{MarketTradePeriodResponse}) = (;market_trade_session = 1)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:MarketTradePeriodResponse})
+        market_trade_session = MarketTradePeriod[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(market_trade_session, decode(sub_d, MarketTradePeriod))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return MarketTradePeriodResponse(market_trade_session)
+    end
+
+    struct MarketTradeDayRequest
+        market::String
+        beg_day::Date
+        end_day::Date
+    end
+
+    default_values(::Type{MarketTradeDayRequest}) = (;market = "", beg_day = Date(1970,1,1), end_day = Date(1970,1,1))
+    field_numbers(::Type{MarketTradeDayRequest}) = (;market = 1, beg_day = 2, end_day = 3)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::MarketTradeDayRequest)
+        initpos = position(e.io)
+        !isempty(x.market) && encode(e, 1, x.market)
+        encode(e, 2, Dates.format(x.beg_day, "yyyymmdd"))
+        encode(e, 3, Dates.format(x.end_day, "yyyymmdd"))
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::MarketTradeDayRequest)
+        encoded_size = 0
+        !isempty(x.market) && (encoded_size += _encoded_size(x.market, 1))
+        encoded_size += _encoded_size(Dates.format(x.beg_day, "yyyymmdd"), 2)
+        encoded_size += _encoded_size(Dates.format(x.end_day, "yyyymmdd"), 3)
+        return encoded_size
+    end
+
+    struct MarketTradeDayResponse
+        trade_day::Vector{Date}
+        half_trade_day::Vector{Date}
+    end
+    MarketTradeDayResponse() = MarketTradeDayResponse(Date[], Date[])
+    default_values(::Type{MarketTradeDayResponse}) = (;trade_day = Date[], half_trade_day = Date[])
+    field_numbers(::Type{MarketTradeDayResponse}) = (;trade_day = 1, half_trade_day = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:MarketTradeDayResponse})
+        trade_day = Date[]
+        half_trade_day = Date[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                push!(trade_day, Date(decode(d, String), "yyyymmdd"))
+            elseif field_number == 2
+                push!(half_trade_day, Date(decode(d, String), "yyyymmdd"))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return MarketTradeDayResponse(trade_day, half_trade_day)
+    end
+
+    # --- Capital Flow ---
+
+    # CapitalFlowLine
+    struct CapitalFlowLine
+        inflow::Float64             # 净流入
+        timestamp::Int64            # 分钟开始时间戳
+    end
+    default_values(::Type{CapitalFlowLine}) = (;inflow = 0.0, timestamp = 0)
+    field_numbers(::Type{CapitalFlowLine}) = (;inflow = 1, timestamp = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:CapitalFlowLine})
+        inflow = 0.0
+        timestamp = 0
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                inflow = parse(Float64, decode(d, String))
+            elseif field_number == 2
+                timestamp = decode(d, Int64)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return CapitalFlowLine(inflow, timestamp)
+    end
+
+    # CapitalFlowIntradayRequest
+    struct CapitalFlowIntradayRequest
+        symbol::String
+    end
+    default_values(::Type{CapitalFlowIntradayRequest}) = (;symbol = "")
+    field_numbers(::Type{CapitalFlowIntradayRequest}) = (;symbol = 1)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:CapitalFlowIntradayRequest})
+        symbol = ""
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                symbol = decode(d, String)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return CapitalFlowIntradayRequest(symbol)
+    end
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::CapitalFlowIntradayRequest)
+        initpos = position(e.io)
+        !isempty(x.symbol) && encode(e, 1, x.symbol)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::CapitalFlowIntradayRequest)
+        encoded_size = 0
+        !isempty(x.symbol) && (encoded_size += _encoded_size(x.symbol, 1))
+        return encoded_size
+    end
+
+    # CapitalFlowIntradayResponse
+    struct CapitalFlowIntradayResponse
+        symbol::String
+        capital_flow_lines::Vector{CapitalFlowLine}
+    end
+    default_values(::Type{CapitalFlowIntradayResponse}) = (;symbol = "", capital_flow_lines = CapitalFlowLine[])
+    field_numbers(::Type{CapitalFlowIntradayResponse}) = (;symbol = 1, capital_flow_lines = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:CapitalFlowIntradayResponse})
+        symbol = ""
+        capital_flow_lines = CapitalFlowLine[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                symbol = decode(d, String)
+            elseif field_number == 2
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(capital_flow_lines, decode(sub_d, CapitalFlowLine))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return CapitalFlowIntradayResponse(symbol, capital_flow_lines)
+    end
+
+    # CapitalDistribution
+    struct CapitalDistribution
+        large::Float64
+        medium::Float64
+        small::Float64
+    end
+    default_values(::Type{CapitalDistribution}) = (;large = 0.0, medium = 0.0, small = 0.0)
+    field_numbers(::Type{CapitalDistribution}) = (;large = 1, medium = 2, small = 3)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:CapitalDistribution})
+        large = 0.0
+        medium = 0.0
+        small = 0.0
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                large = parse(Float64, decode(d, String))
+            elseif field_number == 2
+                medium = parse(Float64, decode(d, String))
+            elseif field_number == 3
+                small = parse(Float64, decode(d, String))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return CapitalDistribution(large, medium, small)
+    end
+
+    # CapitalDistributionResponse
+    struct CapitalDistributionResponse
+        symbol::String
+        timestamp::Int64                    # 数据更新时间戳
+        capital_in::CapitalDistribution
+        capital_out::CapitalDistribution
+    end
+    default_values(::Type{CapitalDistributionResponse}) = (;symbol = "", timestamp = 0, capital_in = CapitalDistribution(0.0, 0.0, 0.0), capital_out = CapitalDistribution(0.0, 0.0, 0.0))
+    field_numbers(::Type{CapitalDistributionResponse}) = (;symbol = 1, timestamp = 2, capital_in = 3, capital_out = 4)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:CapitalDistributionResponse})
+        symbol = ""
+        timestamp = 0
+        capital_in = nothing
+        capital_out = nothing
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                symbol = decode(d, String)
+            elseif field_number == 2
+                timestamp = decode(d, Int64)
+            elseif field_number == 3
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                capital_in = decode(sub_d, CapitalDistribution)
+            elseif field_number == 4
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                capital_out = decode(sub_d, CapitalDistribution)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return CapitalDistributionResponse(symbol, timestamp, capital_in, capital_out)
     end
 end # module

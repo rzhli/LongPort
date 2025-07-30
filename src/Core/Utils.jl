@@ -4,6 +4,7 @@ using ..QuoteProtocol, Logging, Dates
 
 export to_namedtuple
 
+
 """
 通用结构体转NamedTuple函数
 """
@@ -17,7 +18,7 @@ function to_namedtuple(obj)
         end
         return result
     elseif isstructtype(typeof(obj))
-        if obj isa String # String is a struct, but we don't want to convert it
+        if obj isa String || obj isa Date
             return obj
         end
         field_names = fieldnames(typeof(obj))
@@ -26,7 +27,7 @@ function to_namedtuple(obj)
             if name === :timestamp
                 # All protobuf timestamps are expected to be in seconds.
                 dt = unix2datetime(field_val)
-                return Dates.format(dt, "yyyy-mm-ddTHH:MM:SS")
+                return dt
             elseif isstructtype(typeof(field_val)) && !(field_val isa String)
                 return to_namedtuple(field_val)
             else
