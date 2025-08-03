@@ -86,6 +86,12 @@ trade_days, half_trade_days = trading_days(ctx, "HK", Date(2025, 8, 1), Date(202
 # 获取标的当日资金流向
 capital_flow_data = capital_flow(ctx, "700.HK")
 
+# 获取市场温度
+temp = market_temperature(ctx, "US")
+
+# 获取历史市场温度
+history_temp = history_market_temperature(ctx, "US", Date(2025, 7, 1), Date(2025, 7, 31))
+
 # 断开连接
 disconnect!(ctx)
 ```
@@ -137,6 +143,12 @@ unsubscribe(ctx, ["GOOGL.US"], [SubType.QUOTE, SubType.DEPTH])
 - `capital_flow(ctx, symbol)`: 获取标的当日资金流向。
 - `capital_distribution(ctx, symbol)`: 获取标的当日资金分布。
 - `candlesticks(ctx, symbol, period, count)`: 获取 K 线数据。
+- `history_candlesticks_by_offset(ctx, ...)`: 按偏移量获取历史 K 线。
+- `option_chain_info_by_date(ctx, symbol, expiry_date)`: 获取指定到期日的期权链信息。
+- `subscriptions(ctx)`: 查询当前已订阅的标的。
+- `calc_indexes(ctx, symbols)`: 获取计算指标。
+- `market_temperature(ctx, market)`: 获取市场温度。
+- `history_market_temperature(ctx, market, start_date, end_date)`: 获取历史市场温度。
 
 ### 实时行情订阅
 - `set_on_quote(ctx, callback)`: 设置行情推送的回调函数。

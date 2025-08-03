@@ -3,12 +3,12 @@ module Config
     using TOML
     using HTTP, JSON3, SHA, Base64, Dates
     using ..Constant
+    using ..Errors: LongportException
 
     export config, from_toml
 
     """
     Configuration options for Longport SDK
-
     Args:
         app_key: App Key
         app_secret: App Secret
@@ -22,6 +22,7 @@ module Config
         enable_print_quote_packages: Enable printing the opened quote packages when connected to the server
         log_path: Set the path of the log files
     """
+    
     mutable struct config
         app_key::String
         app_secret::String
@@ -30,7 +31,7 @@ module Config
         http_url::Union{String, Nothing}
         quote_ws_url::Union{String, Nothing}
         trade_ws_url::Union{String, Nothing}
-        language::Constant.Language
+        language::Language.T
         enable_overnight::Bool
         
         function config(
@@ -41,7 +42,7 @@ module Config
             http_url::Union{String, Nothing} = nothing,
             quote_ws_url::Union{String, Nothing} = nothing,
             trade_ws_url::Union{String, Nothing} = nothing,
-            language::Constant.Language = Constant.ZH_CN,
+            language::Language.T = Language.ZH_CN,
             enable_overnight::Bool = false   # 美股夜盘交易行情，需订阅US LV1实时行情并开启enable_overnight参数，否则会返回null
         )
             new(
@@ -73,9 +74,9 @@ module Config
         end
         
         # URLs - use Constant defaults
-        http_url = Constant.DEFAULT_HTTP_URL
-        quote_ws_url = Constant.DEFAULT_QUOTE_WS
-        trade_ws_url = Constant.DEFAULT_TRADE_WS
+        http_url = DEFAULT_HTTP_URL_CN
+        quote_ws_url = DEFAULT_QUOTE_WS_CN
+        trade_ws_url = DEFAULT_TRADE_WS_CN
         
         config_dict = TOML.parsefile(path)
         

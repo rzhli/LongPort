@@ -14,7 +14,7 @@ using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCom
         IssuerInfoResponse, WarrantFilterListRequest, FilterConfig, WarrantFilterListResponse,
         FilterWarrantExpiryDate, FilterWarrantInOutBoundsType, WarrantStatus, WarrantType, 
         SortOrderType, WarrantSortBy, MarketTradePeriodResponse, MarketTradeDayRequest, MarketTradeDayResponse,
-        CapitalFlowIntradayRequest, CapitalFlowIntradayResponse
+        CapitalFlowIntradayRequest, CapitalFlowIntradayResponse, CapitalDistributionResponse, MarketTemperatureResponse
         
 using ..Client: WSClient
 using ..Cache: SimpleCache, CacheWithKey, get_or_update
@@ -41,7 +41,8 @@ export QuoteContext,
        option_quote, warrant_quote, participants, subscriptions,
        option_chain_dates, option_chain_strikes, warrant_issuers, warrant_list,
        trading_session, trading_days, capital_flow, capital_distribution,
-       calc_indexes, member_id, quote_level, option_chain_expiry_date_list
+       calc_indexes, member_id, quote_level, option_chain_expiry_date_list, 
+       market_temperature, history_market_temperature
 
 # --- Command Types for the Core Actor ---
 abstract type AbstractCommand end
@@ -232,7 +233,6 @@ function dispatch_push_events(ctx::QuoteContext, push_rx::Channel)
     # @info "Push event dispatcher stopped."
 end
 
-
 # --- Public API ---
 
 @doc """
@@ -331,7 +331,7 @@ function realtime_quote(ctx::QuoteContext, symbols::Vector{String})
     req = MultiSecurityRequest(symbols)
     cmd = GenericRequestCmd(QuoteCommand.QuerySecurityQuote, req, SecurityQuoteResponse, Channel(1))
     resp = request(ctx, cmd)
-    return to_namedtuple(resp.secu_quote)
+    return DataFrame(to_namedtuple(resp.secu_quote))
 end
 
 function candlesticks(
@@ -421,21 +421,40 @@ function depth(ctx::QuoteContext, symbol::String)
     req = SecurityRequest(symbol)
     cmd = GenericRequestCmd(QuoteCommand.QueryDepth, req, SecurityDepthResponse, Channel(1))
     resp = request(ctx, cmd)
-    return (symbol = resp.symbol, ask = to_namedtuple(resp.ask), bid = to_namedtuple(resp.bid))
+
+    asks = to_namedtuple(resp.ask)
+    bids = to_namedtuple(resp.bid)
+
+    ask_df = DataFrame(
+        symbol=resp.symbol,
+        side="ask",
+        price=[a.price for a in asks],
+        volume=[a.volume for a in asks],
+        order_num=[a.order_num for a in asks]
+    )
+
+    bid_df = DataFrame(
+        symbol=resp.symbol,
+        side="bid",
+        price=[b.price for b in bids],
+        volume=[b.volume for b in bids],
+        order_num=[b.order_num for b in bids]
+    )
+
+    return vcat(ask_df, bid_df)
 end
 
 function participants(ctx::QuoteContext)
     req = Vector{UInt8}()
     cmd = GenericRequestCmd(QuoteCommand.QueryParticipantBrokerIds, req, ParticipantBrokerIdsResponse, Channel(1))
     resp = request(ctx, cmd)
-    return to_namedtuple(resp.participant_broker_numbers)
+    return DataFrame(to_namedtuple(resp.participant_broker_numbers))
 end
 
 function subscriptions(ctx::QuoteContext)
     req = Vector{UInt8}()  # Empty request body for subscription query
     cmd = GenericRequestCmd(QuoteCommand.Subscription, req, QuoteSubscribeResponse, Channel(1))
     resp = request(ctx, cmd)
-    
     # Return subscriptions in a structured format
     return [(symbol = s, sub_types = resp.sub_types) for s in resp.symbols]
 end
@@ -444,14 +463,22 @@ function static_info(ctx::QuoteContext, symbols::Vector{String})
     req = MultiSecurityRequest(symbols)
     cmd = GenericRequestCmd(QuoteCommand.QuerySecurityStaticInfo, req, SecurityStaticInfoResponse, Channel(1))
     resp = request(ctx, cmd)
-    return to_namedtuple(resp.secu_static_info)
+    return DataFrame(to_namedtuple(resp.secu_static_info))
 end
 
 function trades(ctx::QuoteContext, symbol::String, count::Int)
     req = SecurityTradeRequest(symbol, count)
     cmd = GenericRequestCmd(QuoteCommand.QueryTrade, req, SecurityTradeResponse, Channel(1))
     resp = request(ctx, cmd)
-    return (symbol = resp.symbol, trades = to_namedtuple(resp.trades))
+    
+    trade_list = to_namedtuple(resp.trades)
+    df = DataFrame(trade_list)
+    
+    # Add symbol column and reorder to make it first
+    df[!, :symbol] .= resp.symbol
+    select!(df, :symbol, Not(:symbol))
+    
+    return df
 end
 
 function brokers(ctx::QuoteContext, symbol::String)
@@ -466,7 +493,17 @@ function intraday(ctx::QuoteContext, symbol::String)
     cmd = GenericRequestCmd(QuoteCommand.QueryIntraday, req, SecurityIntradayResponse, Channel(1))
     resp = request(ctx, cmd)
 
-    return (symbol = resp.symbol, lines = to_namedtuple(resp.lines))
+    data = map(resp.lines) do line
+        (
+            symbol = resp.symbol,
+            timestamp = unix2datetime(line.timestamp),
+            price = line.price,
+            volume = line.volume,
+            turnover = line.turnover,
+            avg_price = line.avg_price
+        )
+    end
+    return DataFrame(data)
 end
 
 function option_chain_expiry_date_list(ctx::QuoteContext, symbol::String)
@@ -503,7 +540,7 @@ function warrant_issuers(ctx::QuoteContext)
     req = Vector{UInt8}()
     cmd = GenericRequestCmd(QuoteCommand.QueryWarrantIssuerInfo, req, IssuerInfoResponse, Channel(1))
     resp = request(ctx, cmd)
-    return to_namedtuple(resp.issuer_info)
+    return DataFrame(to_namedtuple(resp.issuer_info))
 end
 
 function warrant_list(
@@ -516,8 +553,8 @@ function warrant_list(
     expiry_date::Union{Nothing,Vector{FilterWarrantExpiryDate.T}} = nothing,
     price_type::Union{Nothing,Vector{FilterWarrantInOutBoundsType.T}} = nothing,
     status::Union{Nothing,Vector{WarrantStatus.T}} = nothing,
-    language::Language = Constant.EN,
-)
+    language::Language.T = Language.EN,
+    )
     """Filter warrants based on criteria"""
     filter_config = FilterConfig(
         sort_by,
@@ -533,7 +570,10 @@ function warrant_list(
     req = WarrantFilterListRequest(symbol, filter_config, Int32(language))
     cmd = GenericRequestCmd(QuoteCommand.QueryWarrantFilterList, req, WarrantFilterListResponse, Channel(1))
     resp = request(ctx, cmd)
-    return (warrant_list = to_namedtuple(resp.warrant_list), total_count = resp.total_count)
+
+    df = DataFrame(to_namedtuple(resp.warrant_list))
+
+    return (data = df, total_count = resp.total_count)
 end
 
 function trading_session(ctx::QuoteContext)
@@ -542,16 +582,34 @@ function trading_session(ctx::QuoteContext)
         req = Vector{UInt8}()
         cmd = GenericRequestCmd(QuoteCommand.QueryMarketTradePeriod, req, MarketTradePeriodResponse, Channel(1))
         resp = request(ctx, cmd)
-        to_namedtuple(resp.market_trade_session)
+
+        format_time(t::Int64) = lpad(string(t), 4, '0') |> s -> "$(s[1:2]):$(s[3:4])"
+        
+        rows = []
+        for market_session in to_namedtuple(resp.market_trade_session)
+            for session in market_session.trade_session
+                push!(rows, (
+                    market = market_session.market,
+                    beg_time = format_time(session.beg_time),
+                    end_time = format_time(session.end_time),
+                    trade_session = session.trade_session
+                ))
+            end
+        end
+        DataFrame(rows)
     end
 end
 
-function trading_days(ctx::QuoteContext, market::String, start_date::Date, end_date::Date)
+function trading_days(ctx::QuoteContext, market::Market.T, start_date::Date, end_date::Date)
     """Get trading days for a market within date range"""
-    req = MarketTradeDayRequest(market, start_date, end_date)
+    req = MarketTradeDayRequest(string(market), start_date, end_date)
     cmd = GenericRequestCmd(QuoteCommand.QueryMarketTradeDay, req, MarketTradeDayResponse, Channel(1))
     resp = request(ctx, cmd)
-    return to_namedtuple(resp)
+
+    dates = vcat(resp.trade_day, resp.half_trade_day)
+    day_types = vcat(fill("trade_day", length(resp.trade_day)), fill("half_trade_day", length(resp.half_trade_day)))
+
+    return DataFrame(date = dates, day_type = day_types)
 end
 
 function capital_flow(ctx::QuoteContext, symbol::String)
@@ -559,7 +617,15 @@ function capital_flow(ctx::QuoteContext, symbol::String)
     req = CapitalFlowIntradayRequest(symbol)
     cmd = GenericRequestCmd(QuoteCommand.QueryCapitalFlowIntraday, req, CapitalFlowIntradayResponse, Channel(1))
     resp = request(ctx, cmd)
-    return (symbol = resp.symbol, lines = to_namedtuple(resp.capital_flow_lines))
+
+    data = map(resp.capital_flow_lines) do line
+        (
+            symbol = resp.symbol,
+            inflow = line.inflow,
+            timestamp = unix2datetime(line.timestamp)
+        )
+    end
+    return DataFrame(data)
 end
 
 function capital_distribution(ctx::QuoteContext, symbol::String)
@@ -567,19 +633,94 @@ function capital_distribution(ctx::QuoteContext, symbol::String)
     req = SecurityRequest(symbol)
     cmd = GenericRequestCmd(QuoteCommand.QueryCapitalFlowDistribution, req, CapitalDistributionResponse, Channel(1))
     resp = request(ctx, cmd)
-    return to_namedtuple(resp)
+    nt = to_namedtuple(resp)
+
+    rows = []
+    if isdefined(nt, :capital_in) && !isnothing(nt.capital_in)
+        for (size, value) in pairs(nt.capital_in)
+            push!(rows, (
+                symbol = nt.symbol,
+                timestamp = nt.timestamp,
+                flow_type = "in",
+                capital_size = string(size),
+                value = value,
+            ))
+        end
+    end
+    if isdefined(nt, :capital_out) && !isnothing(nt.capital_out)
+        for (size, value) in pairs(nt.capital_out)
+            push!(rows, (
+                symbol = nt.symbol,
+                timestamp = nt.timestamp,
+                flow_type = "out",
+                capital_size = string(size),
+                value = value,
+            ))
+        end
+    end
+
+    if isempty(rows)
+        return DataFrame(
+            symbol = String[],
+            timestamp = DateTime[],
+            flow_type = String[],
+            capital_size = String[],
+            value = Float64[],
+        )
+    else
+        return DataFrame(rows)
+    end
 end
 
-function calc_indexes(ctx::QuoteContext, symbols::Vector{String}, indexes::Vector{String})
-    """Get calculated indexes for symbols"""
-    params = Dict(
-        "symbol" => join(symbols, ","),
-        "indexes" => join(indexes, ",")
+function calc_indexes(ctx::QuoteContext, symbols::Vector{String})
+    all_indexes = collect(instances(CalcIndex.T))
+    req = SecurityCalcQuoteRequest(symbols, all_indexes)
+    cmd = GenericRequestCmd(QuoteCommand.QuerySecurityCalcIndex, req, SecurityCalcQuoteResponse, Channel(1))
+    resp = request(ctx, cmd)
+    return DataFrame(to_namedtuple(resp.security_calc_index))
+end
+
+function market_temperature(ctx::QuoteContext, market::Market.T)
+    """Get market temperature"""
+    cmd = HttpGetCmd("/v1/quote/market_temperature", Dict("market" => string(market)), Channel(1))
+    res = request(ctx, cmd)
+    
+    temp_response = MarketTemperatureResponse(
+        get(res.data, :temperature, nothing),
+        get(res.data, :description, ""),
+        get(res.data, :valuation, nothing),
+        get(res.data, :sentiment, nothing),
+        unix2datetime(parse(Int, get(res.data, :updated_at, "0")))
     )
-    cmd = HttpGetCmd("/v1/quote/calc-indexes", params, Channel(1))
-    return request(ctx, cmd)
+    
+    return to_namedtuple(temp_response)
 end
 
+function history_market_temperature(ctx::QuoteContext, market::Market.T, start_date::Date, end_date::Date)
+    """Get historical market temperature (daily).
+    
+    Note: This endpoint currently only supports daily granularity.
+    """
+    params = Dict(
+        "market" => string(market),
+        "start_date" => Dates.format(start_date, "yyyymmdd"),
+        "end_date" => Dates.format(end_date, "yyyymmdd")
+    )
+    cmd = HttpGetCmd("/v1/quote/history_market_temperature", params, Channel(1))
+    res = request(ctx, cmd)
+
+    data = map(res.data.list) do item
+        (
+            timestamp = unix2datetime(parse(Int64, item.timestamp)),
+            temperature = item.temperature,
+            valuation = item.valuation,
+            sentiment = item.sentiment
+        )
+    end
+    
+    df = DataFrame(data)
+    return (type = res.data.type, list = df)
+end
 
 function option_quote(ctx::QuoteContext, symbols::Vector{String})
     req = MultiSecurityRequest(symbols)
@@ -596,7 +737,7 @@ function warrant_quote(ctx::QuoteContext, symbols::Vector{String})
     resp = request(ctx, cmd)
     
     # Convert to structured format including warrant-specific data
-    return to_namedtuple(resp.secu_quote)
+    return DataFrame(to_namedtuple(resp.secu_quote))
 end
 
 member_id(ctx::QuoteContext) = ctx.inner.member_id

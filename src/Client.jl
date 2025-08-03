@@ -11,8 +11,6 @@ using ..ControlProtocol
 using ..QuoteProtocol
 using ..Errors
 
-
-
 export WSClient, refresh_token, post
 
 # WebSocket Client Constants (参考 Rust 实现)

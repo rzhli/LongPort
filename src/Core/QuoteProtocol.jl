@@ -36,7 +36,9 @@ module QuoteProtocol
            MarketTradePeriodResponse, MarketTradePeriod, TradePeriod,
            MarketTradeDayRequest, MarketTradeDayResponse,
            CapitalFlowLine, CapitalFlowIntradayRequest, CapitalFlowIntradayResponse,
-           CapitalDistribution, CapitalDistributionResponse
+           CapitalDistribution, CapitalDistributionResponse,
+           SecurityCalcQuoteRequest, SecurityCalcQuoteResponse, SecurityCalcIndex, MarketTemperatureResponse,
+           MarketTemperature, HistoryMarketTemperatureResponse
            
     # 行情协议指令定义 - 基于api.proto
     @enumx QuoteCommand begin
@@ -109,6 +111,7 @@ module QuoteProtocol
         PreTrade = 1               # 盘前
         PostTrade = 2              # 盘后
         OvernightTrade = 3         # 夜盘
+        All = 100
     end
     show(io::IO, x::TradeSession.T) = print(io, Symbol(x))
 
@@ -1295,7 +1298,7 @@ module QuoteProtocol
     struct OptionExtend
         implied_volatility::String
         open_interest::Int64
-        expiry_date::String
+        expiry_date::Date
         strike_price::String
         contract_multiplier::String
         contract_type::String
@@ -1304,13 +1307,13 @@ module QuoteProtocol
         historical_volatility::String
         underlying_symbol::String
     end
-    default_values(::Type{OptionExtend}) = (;implied_volatility = "", open_interest = zero(Int64), expiry_date = "", strike_price = "", contract_multiplier = "", contract_type = "", contract_size = "", direction = "", historical_volatility = "", underlying_symbol = "")
+    default_values(::Type{OptionExtend}) = (;implied_volatility = "", open_interest = zero(Int64), expiry_date = Date(1970,1,1), strike_price = "", contract_multiplier = "", contract_type = "", contract_size = "", direction = "", historical_volatility = "", underlying_symbol = "")
     field_numbers(::Type{OptionExtend}) = (;implied_volatility = 1, open_interest = 2, expiry_date = 3, strike_price = 4, contract_multiplier = 5, contract_type = 6, contract_size = 7, direction = 8, historical_volatility = 9, underlying_symbol = 10)
 
     function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:OptionExtend})
         implied_volatility = ""
         open_interest = zero(Int64)
-        expiry_date = ""
+        expiry_date = Date(1970,1,1)
         strike_price = ""
         contract_multiplier = ""
         contract_type = ""
@@ -1325,7 +1328,7 @@ module QuoteProtocol
             elseif field_number == 2
                 open_interest = decode(d, Int64)
             elseif field_number == 3
-                expiry_date = decode(d, String)
+                expiry_date = Date(decode(d, String), "yyyymmdd")
             elseif field_number == 4
                 strike_price = decode(d, String)
             elseif field_number == 5
@@ -1350,8 +1353,8 @@ module QuoteProtocol
     # 权证扩展信息
     struct WarrantExtend
         implied_volatility::Float64
-        expiry_date::String
-        last_trade_date::String
+        expiry_date::Date
+        last_trade_date::Date
         outstanding_ratio::Float64
         outstanding_qty::Int64
         conversion_ratio::Float64
@@ -1362,13 +1365,13 @@ module QuoteProtocol
         call_price::Float64
         underlying_symbol::String
     end
-    default_values(::Type{WarrantExtend}) = (;implied_volatility = 0.0, expiry_date = "", last_trade_date = "", outstanding_ratio = 0.0, outstanding_qty = zero(Int64), conversion_ratio = 0.0, category = "", strike_price = 0.0, upper_strike_price = 0.0, lower_strike_price = 0.0, call_price = 0.0, underlying_symbol = "")
+    default_values(::Type{WarrantExtend}) = (;implied_volatility = 0.0, expiry_date = Date(1970,1,1), last_trade_date = Date(1970,1,1), outstanding_ratio = 0.0, outstanding_qty = zero(Int64), conversion_ratio = 0.0, category = "", strike_price = 0.0, upper_strike_price = 0.0, lower_strike_price = 0.0, call_price = 0.0, underlying_symbol = "")
     field_numbers(::Type{WarrantExtend}) = (;implied_volatility = 1, expiry_date = 2, last_trade_date = 3, outstanding_ratio = 4, outstanding_qty = 5, conversion_ratio = 6, category = 7, strike_price = 8, upper_strike_price = 9, lower_strike_price = 10, call_price = 11, underlying_symbol = 12)
 
     function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:WarrantExtend})
         implied_volatility = 0.0
-        expiry_date = ""
-        last_trade_date = ""
+        expiry_date = Date(1970,1,1)
+        last_trade_date = Date(1970,1,1)
         outstanding_ratio = 0.0
         outstanding_qty = zero(Int64)
         conversion_ratio = 0.0
@@ -1383,9 +1386,9 @@ module QuoteProtocol
             if field_number == 1
                 implied_volatility = parse(Float64, decode(d, String))
             elseif field_number == 2
-                expiry_date = decode(d, String)
+                expiry_date = Date(decode(d, String), "yyyymmdd")
             elseif field_number == 3
-                last_trade_date = decode(d, String)
+                last_trade_date = Date(decode(d, String), "yyyymmdd")
             elseif field_number == 4
                 outstanding_ratio = parse(Float64, decode(d, String))
             elseif field_number == 5
@@ -1408,7 +1411,11 @@ module QuoteProtocol
                 skip(d, wire_type)
             end
         end
-        return WarrantExtend(implied_volatility, expiry_date, last_trade_date, outstanding_ratio, outstanding_qty, conversion_ratio, category, strike_price, upper_strike_price, lower_strike_price, call_price, underlying_symbol)
+        return WarrantExtend(
+            implied_volatility, expiry_date, last_trade_date, outstanding_ratio, outstanding_qty, 
+            conversion_ratio, category, strike_price, upper_strike_price, lower_strike_price, call_price,
+            underlying_symbol
+        )
     end
 
     # 期权行情数据
@@ -1512,7 +1519,7 @@ module QuoteProtocol
         trade_status::TradeStatus.T
         warrant_extend::WarrantExtend
     end
-    default_values(::Type{WarrantQuote}) = (;symbol = "", last_done = 0.0, prev_close = 0.0, open = 0.0, high = 0.0, low = 0.0, timestamp = zero(Int64), volume = zero(Int64), turnover = 0.0, trade_status = TradeStatus.Normal, warrant_extend = WarrantExtend(0.0, "", "", 0.0, 0, 0.0, "", 0.0, 0.0, 0.0, 0.0, ""))
+    default_values(::Type{WarrantQuote}) = (;symbol = "", last_done = 0.0, prev_close = 0.0, open = 0.0, high = 0.0, low = 0.0, timestamp = zero(Int64), volume = zero(Int64), turnover = 0.0, trade_status = TradeStatus.Normal, warrant_extend = WarrantExtend(0.0, Date(1970,1,1), Date(1970,1,1), 0.0, 0, 0.0, "", 0.0, 0.0, 0.0, 0.0, ""))
     field_numbers(::Type{WarrantQuote}) = (;symbol = 1, last_done = 2, prev_close = 3, open = 4, high = 5, low = 6, timestamp = 7, volume = 8, turnover = 9, trade_status = 10, warrant_extend = 11)
 
     function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:WarrantQuote})
@@ -1526,7 +1533,7 @@ module QuoteProtocol
         volume = zero(Int64)
         turnover = 0.0
         trade_status = TradeStatus.Normal
-        warrant_extend = WarrantExtend(0.0, "", "", 0.0, 0, 0.0, "", 0.0, 0.0, 0.0, 0.0, "")
+        warrant_extend = WarrantExtend(0.0, Date(1970,1,1), Date(1970,1,1), 0.0, 0, 0.0, "", 0.0, 0.0, 0.0, 0.0, "")
         while !message_done(d)
             field_number, wire_type = decode_tag(d)
             if field_number == 1
@@ -2475,5 +2482,336 @@ module QuoteProtocol
             end
         end
         return CapitalDistributionResponse(symbol, timestamp, capital_in, capital_out)
+    end
+
+    struct SecurityCalcQuoteRequest
+        symbols::Vector{String}
+        calc_index::Vector{CalcIndex.T}
+    end
+
+    default_values(::Type{SecurityCalcQuoteRequest}) = (;symbols = String[], calc_index = CalcIndex.T[])
+    field_numbers(::Type{SecurityCalcQuoteRequest}) = (;symbols = 1, calc_index = 2)
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::SecurityCalcQuoteRequest)
+        initpos = position(e.io)
+        !isempty(x.symbols) && encode(e, 1, x.symbols)
+        !isempty(x.calc_index) && encode(e, 2, x.calc_index)
+        return position(e.io) - initpos
+    end
+
+    function _encoded_size(x::SecurityCalcQuoteRequest)
+        encoded_size = 0
+        !isempty(x.symbols) && (encoded_size += _encoded_size(x.symbols, 1))
+        !isempty(x.calc_index) && (encoded_size += _encoded_size(x.calc_index, 2))
+        return encoded_size
+    end
+
+    struct SecurityCalcIndex
+        symbol::String
+        last_done::Float64
+        change_val::Float64
+        change_rate::Float64
+        volume::Int64
+        turnover::Float64
+        ytd_change_rate::Float64
+        turnover_rate::Float64
+        total_market_value::Float64
+        capital_flow::Float64
+        amplitude::Float64
+        volume_ratio::Float64
+        pe_ttm_ratio::Float64
+        pb_ratio::Float64
+        dividend_ratio_ttm::Float64
+        five_day_change_rate::Float64
+        ten_day_change_rate::Float64
+        half_year_change_rate::Float64
+        five_minutes_change_rate::Float64
+        expiry_date::Date
+        strike_price::Float64
+        upper_strike_price::Float64
+        lower_strike_price::Float64
+        outstanding_qty::Int64
+        outstanding_ratio::Float64
+        premium::Float64
+        itm_otm::Float64
+        implied_volatility::Float64
+        warrant_delta::Float64
+        call_price::Float64
+        to_call_price::Float64
+        effective_leverage::Float64
+        leverage_ratio::Float64
+        conversion_ratio::Float64
+        balance_point::Float64
+        open_interest::Int64
+        delta::Float64
+        gamma::Float64
+        theta::Float64
+        vega::Float64
+        rho::Float64
+    end
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:SecurityCalcIndex})
+        # Initialize fields with default values
+        symbol = ""
+        last_done = 0.0
+        change_val = 0.0
+        change_rate = 0.0
+        volume = Int64(0)
+        turnover = 0.0
+        ytd_change_rate = 0.0
+        turnover_rate = 0.0
+        total_market_value = 0.0
+        capital_flow = 0.0
+        amplitude = 0.0
+        volume_ratio = 0.0
+        pe_ttm_ratio = 0.0
+        pb_ratio = 0.0
+        dividend_ratio_ttm = 0.0
+        five_day_change_rate = 0.0
+        ten_day_change_rate = 0.0
+        half_year_change_rate = 0.0
+        five_minutes_change_rate = 0.0
+        expiry_date = Date(1970, 1, 1)
+        strike_price = 0.0
+        upper_strike_price = 0.0
+        lower_strike_price = 0.0
+        outstanding_qty = Int64(0)
+        outstanding_ratio = 0.0
+        premium = 0.0
+        itm_otm = 0.0
+        implied_volatility = 0.0
+        warrant_delta = 0.0
+        call_price = 0.0
+        to_call_price = 0.0
+        effective_leverage = 0.0
+        leverage_ratio = 0.0
+        conversion_ratio = 0.0
+        balance_point = 0.0
+        open_interest = Int64(0)
+        delta = 0.0
+        gamma = 0.0
+        theta = 0.0
+        vega = 0.0
+        rho = 0.0
+
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                symbol = decode(d, String)
+            elseif field_number == 2
+                last_done = parse(Float64, decode(d, String))
+            elseif field_number == 3
+                change_val = parse(Float64, decode(d, String))
+            elseif field_number == 4
+                change_rate = parse(Float64, decode(d, String))
+            elseif field_number == 5
+                volume = decode(d, Int64)
+            elseif field_number == 6
+                turnover = parse(Float64, decode(d, String))
+            elseif field_number == 7
+                ytd_change_rate = parse(Float64, decode(d, String))
+            elseif field_number == 8
+                turnover_rate = parse(Float64, decode(d, String))
+            elseif field_number == 9
+                total_market_value = parse(Float64, decode(d, String))
+            elseif field_number == 10
+                capital_flow = parse(Float64, decode(d, String))
+            elseif field_number == 11
+                amplitude = parse(Float64, decode(d, String))
+            elseif field_number == 12
+                volume_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 13
+                pe_ttm_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 14
+                pb_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 15
+                dividend_ratio_ttm = parse(Float64, decode(d, String))
+            elseif field_number == 16
+                five_day_change_rate = parse(Float64, decode(d, String))
+            elseif field_number == 17
+                ten_day_change_rate = parse(Float64, decode(d, String))
+            elseif field_number == 18
+                half_year_change_rate = parse(Float64, decode(d, String))
+            elseif field_number == 19
+                five_minutes_change_rate = parse(Float64, decode(d, String))
+            elseif field_number == 20
+                expiry_date = Date(decode(d, String), "yyyymmdd")
+            elseif field_number == 21
+                strike_price = parse(Float64, decode(d, String))
+            elseif field_number == 22
+                upper_strike_price = parse(Float64, decode(d, String))
+            elseif field_number == 23
+                lower_strike_price = parse(Float64, decode(d, String))
+            elseif field_number == 24
+                outstanding_qty = decode(d, Int64)
+            elseif field_number == 25
+                outstanding_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 26
+                premium = parse(Float64, decode(d, String))
+            elseif field_number == 27
+                itm_otm = parse(Float64, decode(d, String))
+            elseif field_number == 28
+                implied_volatility = parse(Float64, decode(d, String))
+            elseif field_number == 29
+                warrant_delta = parse(Float64, decode(d, String))
+            elseif field_number == 30
+                call_price = parse(Float64, decode(d, String))
+            elseif field_number == 31
+                to_call_price = parse(Float64, decode(d, String))
+            elseif field_number == 32
+                effective_leverage = parse(Float64, decode(d, String))
+            elseif field_number == 33
+                leverage_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 34
+                conversion_ratio = parse(Float64, decode(d, String))
+            elseif field_number == 35
+                balance_point = parse(Float64, decode(d, String))
+            elseif field_number == 36
+                open_interest = decode(d, Int64)
+            elseif field_number == 37
+                delta = parse(Float64, decode(d, String))
+            elseif field_number == 38
+                gamma = parse(Float64, decode(d, String))
+            elseif field_number == 39
+                theta = parse(Float64, decode(d, String))
+            elseif field_number == 40
+                vega = parse(Float64, decode(d, String))
+            elseif field_number == 41
+                rho = parse(Float64, decode(d, String))
+            else
+                skip(d, wire_type)
+            end
+        end
+
+        return SecurityCalcIndex(
+            symbol, last_done, change_val, change_rate, volume, turnover, ytd_change_rate,
+            turnover_rate, total_market_value, capital_flow, amplitude, volume_ratio,
+            pe_ttm_ratio, pb_ratio, dividend_ratio_ttm, five_day_change_rate,
+            ten_day_change_rate, half_year_change_rate, five_minutes_change_rate,
+            expiry_date, strike_price, upper_strike_price, lower_strike_price,
+            outstanding_qty, outstanding_ratio, premium, itm_otm, implied_volatility,
+            warrant_delta, call_price, to_call_price, effective_leverage,
+            leverage_ratio, conversion_ratio, balance_point, open_interest, delta,
+            gamma, theta, vega, rho
+        )
+    end
+
+    struct SecurityCalcQuoteResponse
+        security_calc_index::Vector{SecurityCalcIndex}
+    end
+
+    default_values(::Type{SecurityCalcQuoteResponse}) = (;security_calc_index = SecurityCalcIndex[])
+    field_numbers(::Type{SecurityCalcQuoteResponse}) = (;security_calc_index = 1)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:SecurityCalcQuoteResponse})
+        security_calc_index = SecurityCalcIndex[]
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(security_calc_index, decode(sub_d, SecurityCalcIndex))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return SecurityCalcQuoteResponse(security_calc_index)
+    end
+
+    """
+    Market Temperature information
+    """
+    struct MarketTemperatureResponse
+        temperature::Union{Int, Nothing}
+        description::String
+        valuation::Union{Int, Nothing}
+        sentiment::Union{Int, Nothing}
+        updated_at::DateTime
+    end
+
+    default_values(::Type{MarketTemperatureResponse}) = (;temperature = nothing, description = "", valuation = nothing, sentiment = nothing, updated_at = DateTime(1970,1,1))
+    field_numbers(::Type{MarketTemperatureResponse}) = (;temperature = 1, description = 2, valuation = 3, sentiment = 4, updated_at = 5)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:MarketTemperatureResponse})
+        temperature = nothing
+        description = ""
+        valuation = nothing
+        sentiment = nothing
+        updated_at = DateTime(1970,1,1)
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                temperature = decode(d, Int)
+            elseif field_number == 2
+                description = decode(d, String)
+            elseif field_number == 3
+                valuation = decode(d, Int)
+            elseif field_number == 4
+                sentiment = decode(d, Int)
+            elseif field_number == 5
+                updated_at = unix2datetime(parse(Int, decode(d, String)))
+            else
+                skip(d, wire_type)
+            end
+        end
+        return MarketTemperatureResponse(temperature, description, valuation, sentiment, updated_at)
+    end
+
+    struct MarketTemperature
+        timestamp::Int64
+        temperature::Int32
+        valuation::Int32
+        sentiment::Int32
+    end
+
+    default_values(::Type{MarketTemperature}) = (;timestamp = 0, temperature = 0, valuation = 0, sentiment = 0)
+    field_numbers(::Type{MarketTemperature}) = (;timestamp = 1, temperature = 2, valuation = 3, sentiment = 4)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:MarketTemperature})
+        timestamp = 0
+        temperature = 0
+        valuation = 0
+        sentiment = 0
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                timestamp = decode(d, Int64)
+            elseif field_number == 2
+                temperature = decode(d, Int32)
+            elseif field_number == 3
+                valuation = decode(d, Int32)
+            elseif field_number == 4
+                sentiment = decode(d, Int32)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return MarketTemperature(timestamp, temperature, valuation, sentiment)
+    end
+
+    struct HistoryMarketTemperatureResponse
+        list::Vector{MarketTemperature}
+        type::String
+    end
+
+    default_values(::Type{HistoryMarketTemperatureResponse}) = (;list = MarketTemperature[], type = "")
+    field_numbers(::Type{HistoryMarketTemperatureResponse}) = (;list = 1, type = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:HistoryMarketTemperatureResponse})
+        list = MarketTemperature[]
+        type = ""
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(list, decode(sub_d, MarketTemperature))
+            elseif field_number == 2
+                type = decode(d, String)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return HistoryMarketTemperatureResponse(list, type)
     end
 end # module

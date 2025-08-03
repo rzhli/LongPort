@@ -1,9 +1,11 @@
 module Constant
 
+    using EnumX
+    
     export DEFAULT_HTTP_URL, DEFAULT_HTTP_URL_CN, DEFAULT_QUOTE_WS, 
            DEFAULT_TRADE_WS, DEFAULT_QUOTE_WS_CN, DEFAULT_TRADE_WS_CN, 
-           Language, DEFAULT_CLIENT_VERSION, PushCandlestickMode,
-           PROTOCOL_VERSION, CODEC_TYPE, PLATFORM_TYPE, Market
+           DEFAULT_CLIENT_VERSION, PROTOCOL_VERSION, PushCandlestickMode,
+           CODEC_TYPE, PLATFORM_TYPE, Language, Market, Granularity
     
     # --- 默认API地址 ---
     const DEFAULT_HTTP_URL = "https://openapi.longportapp.com"
@@ -22,25 +24,38 @@ module Constant
     const DEFAULT_CLIENT_VERSION = "1.0.0"
 
     # --- 支持语言 ---
-    @enum Language begin
+    @enumx Language begin
         ZH_CN = 0  # 简体中文 (default)
         ZH_HK = 1  # 繁體中文 (香港)
         EN = 2     # English
     end
 
     # --- Push Modes ---
-    @enum PushCandlestickMode begin
+    @enumx PushCandlestickMode begin
         Realtime  # 实时模式
         Confirmed # 确认模式
     end
     
     # --- Market Enum ---
-    @enum Market begin
+    @enumx Market begin
         Unknown = 0
         US = 1      # US market
         HK = 2      # HK market 
         CN = 3      # CN market
         SG = 4      # SG market
+    end
+
+    @enumx Granularity begin
+        Day = 0
+        Week = 1
+        Month = 2
+    end
+    
+    function Base.string(g::Granularity.T)
+        g == Granularity.Day && return "day"
+        g == Granularity.Week && return "week"
+        g == Granularity.Month && return "month"
+        throw(ArgumentError("Invalid Granularity value"))
     end
     
 end # module

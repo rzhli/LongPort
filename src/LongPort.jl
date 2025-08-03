@@ -3,15 +3,13 @@ module LongPort
     using TOML, Dates
     # Core Modules
     include("Core/Constant.jl")
+    include("Core/Errors.jl")
     include("Core/QuoteProtocol.jl")
     include("Core/ControlProtocol.jl")
     include("Config.jl")
-    include("Core/Errors.jl")
     include("Core/Utils.jl")
     include("Core/Cache.jl")
     include("Client.jl")
-
-
     include("Quote/QuoteTypes.jl")
 
     include("Quote/Push.jl")
@@ -19,7 +17,7 @@ module LongPort
     include("Trade/Types.jl")
     include("Trade/Trade.jl")
 
-    using .Constant
+    using .Constant: Market, Granularity
     using .QuoteProtocol
     using .ControlProtocol
     using .Cache
@@ -31,12 +29,12 @@ module LongPort
     using .Push
     using .Quote
     
-            # Config 模块
-    export Config, from_toml,
-
-            # QuoteProtocol模块
+            # Config 模块         Constant 模块
+    export config, from_toml, Market, Granularity,
+           # QuoteProtocol模块
            QuoteContext, PushQuote,                                                     # 结构体类型Struct
            SubType, CandlePeriod, AdjustType, Direction, WarrantSortBy, SortOrderType,     # 枚举类型Enums
+           TradeSession,
 
            # Quote 模块
            try_new, disconnect!, realtime_quote, subscribe, unsubscribe, 
@@ -48,15 +46,13 @@ module LongPort
            
            intraday, option_quote, warrant_quote, participants, subscriptions,
            option_chain_dates, option_chain_strikes, warrant_issuers, warrant_filter,
-           capital_flow, capital_distribution
-           calc_indexes, member_id, quote_level
+           capital_flow, capital_distribution, calc_indexes, market_temperature,
+           history_market_temperature, member_id, quote_level
 
            # Trade module
            TradeContext,
            # Assuming function names from a typical trade API, might need adjustment
            submit_order, cancel_order, get_orders, get_positions, get_account_balance
-
-
     const VERSION = TOML.parsefile(joinpath(pkgdir(@__MODULE__), "Project.toml"))["version"]
 
     function __init__()

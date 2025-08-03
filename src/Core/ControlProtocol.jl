@@ -4,8 +4,7 @@
 module ControlProtocol
 
     import ProtoBuf as PB
-    using ProtoBuf: OneOf
-    using ProtoBuf.EnumX: @enumx
+    using EnumX
 
     export ControlCommand, Heartbeat, ReconnectRequest, AuthRequest, var"Close.Code"
     export ReconnectResponse, AuthResponse, Close 
