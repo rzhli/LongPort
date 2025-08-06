@@ -10,7 +10,7 @@ module QuoteProtocol
     import ProtoBuf: ProtoDecoder, decode, encode, _encoded_size, skip, message_done, decode_tag, default_values, field_numbers
     import Base: show
 
-    export QuoteCommand, SubType, TradeStatus, TradeSession, AdjustType, CandlePeriod, Direction,        # 枚举类型Enums
+    export QuoteCommand, SubType, TradeStatus, TradeSession, AdjustType, CandlePeriod, Direction, TradeDirection,       # 枚举类型Enums
            SecurityBoard, PushQuoteTag, CalcIndex, FilterWarrantExpiryDate, FilterWarrantInOutBoundsType,
            WarrantStatus, WarrantType, WarrantSortBy, SortOrderType,
            
@@ -19,10 +19,10 @@ module QuoteProtocol
            
            HistoryCandlestickQueryType,                                                          # 枚举类型Enums
 
-           Candlestick, SecurityCandlestickRequest, SecurityHistoryCandlestickRequest, 
+           Candlestick, SecurityCandlestickRequest, SecurityHistoryCandlestickRequest,
            SecurityCandlestickResponse,                              # 结构体类型Struct
            QuoteSubscribeRequest, QuoteSubscribeResponse, QuoteUnsubscribeRequest,                            # 结构体类型Struct
-           QuoteUnsubscribeResponse,
+           QuoteUnsubscribeResponse, SubscriptionRequest, SubscriptionResponse, SubTypeList,
 
            Depth, Brokers, PushQuote, PushDepth, PushBrokers, PushTrade,                   # 结构体类型Struct
            OptionExtend, WarrantExtend, StrikePriceInfo,  SecurityDepthResponse, SecurityBrokersResponse,
@@ -145,6 +145,14 @@ module QuoteProtocol
         YEAR = 4000
     end
     show(io::IO, x::CandlePeriod.T) = print(io, Symbol(x))
+
+    # 交易方向
+    @enumx TradeDirection begin
+        Neutral = 0
+        Down = 1
+        Up = 2
+    end
+    show(io::IO, x::TradeDirection.T) = print(io, Symbol(x))
 
     # 推送行情标签
     @enumx PushQuoteTag begin
@@ -296,6 +304,106 @@ module QuoteProtocol
         ConversionRatio = 19
         BalancePoint = 20
         Status = 21
+    end
+
+    """
+    交易类型
+    """
+    @enumx TradeType begin
+        # Common
+        Automatch = 0                   # 自动对盘
+        # HK
+        OutsideMarket = 1            # 场外交易
+        OddLot = 2                   # 碎股交易
+        NonAutomatch = 3             # 非自动对盘
+        PreMarket = 4                # 开市前成交盘
+        Auction = 5                  # 竞价交易
+        SameBrokerNonAutomatch = 6   # 同一券商非自动对盘
+        SameBrokerAutomatch = 7      # 同一券商自动对盘
+        # US
+        Acquisition = 8              # 收购
+        BatchTrade = 9               # 批量交易
+        Distribution = 10            # 分配
+        IntermarketSweep = 11        # 跨市扫盘单
+        BatchSell = 12               # 批量卖出
+        OffPriceTrade = 13           # 离价交易
+        USOddLot = 14                  # 碎股交易
+        Rule155Trade = 15            # 第 155 条交易（纽交所规则）
+        ExchangeClosingPrice = 16    # 交易所收盘价
+        PriorReferencePrice = 17     # 前参考价
+        ExchangeOpeningPrice = 18    # 交易所开盘价
+        SplitTrade = 19              # 拆单交易
+        AffiliateTrade = 20          # 附属交易
+        AveragePriceTrade = 21       # 平均价成交
+        CrossMarketTrade = 22        # 跨市场交易
+        StoppedStock = 23            # 停售股票（常规交易）
+        UnknownTradeType = 24
+    end
+    show(io::IO, x::TradeType.T) = print(io, Symbol(x))
+
+    function trade_type_from_string(s::String, symbol::String)
+        market = uppercase(last(split(symbol, '.')))
+        if market == "HK"
+            return if s == ""
+                TradeType.Automatch             # 自动对盘
+            elseif s == "*"
+                TradeType.OutsideMarket      # 场外交易
+            elseif s == "D"
+                TradeType.OddLot             # 碎股交易
+            elseif s == "M"
+                TradeType.NonAutomatch       # 非自动对盘
+            elseif s == "P"
+                TradeType.PreMarket          # 开市前成交盘
+            elseif s == "U"
+                TradeType.Auction            # 竞价交易
+            elseif s == "X"
+                TradeType.SameBrokerNonAutomatch # 同一券商非自动对盘
+            elseif s == "Y"
+                TradeType.SameBrokerAutomatch    # 同一券商自动对盘
+            else
+                TradeType.UnknownTradeType
+            end
+        elseif market == "US"
+            return if s == ""
+                TradeType.Automatch                 # 自动对盘
+            elseif s == "A"
+                TradeType.Acquisition            # 收购
+            elseif s == "B"
+                TradeType.BatchTrade             # 批量交易
+            elseif s == "D"
+                TradeType.Distribution           # 分配
+            elseif s == "F"
+                TradeType.IntermarketSweep       # 跨市扫盘单
+            elseif s == "G"
+                TradeType.BatchSell              # 批量卖出
+            elseif s == "H"
+                TradeType.OffPriceTrade          # 离价交易
+            elseif s == "I"
+                TradeType.USOddLot                 # 碎股交易
+            elseif s == "K"
+                TradeType.Rule155Trade           # 第 155 条交易（纽交所规则）
+            elseif s == "M"
+                TradeType.ExchangeClosingPrice   # 交易所收盘价
+            elseif s == "P"
+                TradeType.PriorReferencePrice    # 前参考价
+            elseif s == "Q"
+                TradeType.ExchangeOpeningPrice   # 交易所开盘价
+            elseif s == "S"
+                TradeType.SplitTrade             # 拆单交易
+            elseif s == "V"
+                TradeType.AffiliateTrade         # 附属交易
+            elseif s == "W"
+                TradeType.AveragePriceTrade      # 平均价成交
+            elseif s == "X"
+                TradeType.CrossMarketTrade       # 跨市场交易
+            elseif s == "1"
+                TradeType.StoppedStock           # 停售股票（常规交易）
+            else
+                TradeType.UnknownTradeType
+            end
+        else
+            return TradeType.UnknownTradeType
+        end
     end
 
     # 基础请求结构
@@ -911,7 +1019,7 @@ module QuoteProtocol
 
     function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:QuoteSubscribeRequest})
         symbol = String[]
-        sub_type = SubType.T[]
+        sub_type = BufferedVector{SubType.T}()
         is_first_push = false
         while !message_done(d)
             field_number, wire_type = decode_tag(d)
@@ -925,7 +1033,7 @@ module QuoteProtocol
                 skip(d, wire_type)
             end
         end
-        return QuoteSubscribeRequest(symbol, sub_type, is_first_push)
+        return QuoteSubscribeRequest(symbol, getindex(sub_type), is_first_push)
     end
     function encode(e::ProtoBuf.AbstractProtoEncoder, x::QuoteSubscribeRequest)
         initpos = position(e.io)
@@ -970,7 +1078,7 @@ module QuoteProtocol
 
     function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:QuoteUnsubscribeRequest})
         symbol = String[]
-        sub_type = SubType.T[]
+        sub_type = BufferedVector{SubType.T}()
         unsub_all = false
         while !message_done(d)
             field_number, wire_type = decode_tag(d)
@@ -984,7 +1092,7 @@ module QuoteProtocol
                 skip(d, wire_type)
             end
         end
-        return QuoteUnsubscribeRequest(symbol, sub_type, unsub_all)
+        return QuoteUnsubscribeRequest(symbol, getindex(sub_type), unsub_all)
     end
     function encode(e::ProtoBuf.ProtoBuf.AbstractProtoEncoder, x::QuoteUnsubscribeRequest)
         initpos = position(e.io)
@@ -1018,100 +1126,69 @@ module QuoteProtocol
         return 0
     end
 
-    # 盘口数据
-    struct Depth
-        position::Int64
-        price::Float64
-        volume::Int64
-        order_num::Int64
+    struct SubscriptionRequest
     end
-    default_values(::Type{Depth}) = (;position = zero(Int64), price = 0.0, volume = zero(Int64), order_num = zero(Int64))
-    field_numbers(::Type{Depth}) = (;position = 1, price = 2, volume = 3, order_num = 4)
+    default_values(::Type{SubscriptionRequest}) = NamedTuple()
+    field_numbers(::Type{SubscriptionRequest}) = NamedTuple()
 
-    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Depth})
-        position = zero(Int64)
-        price = 0.0
-        volume = zero(Int64)
-        order_num = zero(Int64)
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:SubscriptionRequest})
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            skip(d, wire_type)
+        end
+        return SubscriptionRequest()
+    end
+    function _encoded_size(x::SubscriptionRequest)
+        return 0
+    end
+
+    function encode(e::ProtoBuf.AbstractProtoEncoder, x::SubscriptionRequest)
+        return 0
+    end
+
+    struct SubTypeList
+        symbol::String
+        sub_type::Vector{SubType.T}
+    end
+    default_values(::Type{SubTypeList}) = (;symbol = "", sub_type = SubType.T[])
+    field_numbers(::Type{SubTypeList}) = (;symbol = 1, sub_type = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:SubTypeList})
+        symbol = ""
+        sub_type = BufferedVector{SubType.T}()
         while !message_done(d)
             field_number, wire_type = decode_tag(d)
             if field_number == 1
-                position = decode(d, Int64)
+                symbol = decode(d, String)
             elseif field_number == 2
-                price = parse(Float64, decode(d, String))
-            elseif field_number == 3
-                volume = decode(d, Int64)
-                elseif field_number == 4
-                order_num = decode(d, Int64)
+                decode!(d, wire_type, sub_type)
             else
                 skip(d, wire_type)
             end
         end
-        return Depth(position, price, volume, order_num)
+        return SubTypeList(symbol, getindex(sub_type))
     end
 
-    # 经纪队列
-    struct Brokers
-        position::Int64
-        broker_ids::Vector{Int64}
+    struct SubscriptionResponse
+        sub_list::Vector{SubTypeList}
     end
-    default_values(::Type{Brokers}) = (;position = zero(Int64), broker_ids = Int64[])
-    field_numbers(::Type{Brokers}) = (;position = 1, broker_ids = 2)
+    SubscriptionResponse() = SubscriptionResponse(SubTypeList[])
+    default_values(::Type{SubscriptionResponse}) = (;sub_list = SubTypeList[])
+    field_numbers(::Type{SubscriptionResponse}) = (;sub_list = 1)
 
-    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Brokers})
-        position = zero(Int64)
-        broker_ids = BufferedVector{Int64}()
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:SubscriptionResponse})
+        sub_list = SubTypeList[]
         while !message_done(d)
             field_number, wire_type = decode_tag(d)
             if field_number == 1
-                position = decode(d, Int64)
-            elseif field_number == 2
-                decode!(d, wire_type, broker_ids)
+                len = decode(d, UInt64)
+                sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
+                push!(sub_list, decode(sub_d, SubTypeList))
             else
                 skip(d, wire_type)
             end
         end
-        return Brokers(position, getindex(broker_ids))
-    end
-
-    # 成交明细
-    struct Trade
-        price::Float64
-        volume::Int64
-        timestamp::Int64
-        trade_type::String
-        direction::Int64
-        trade_session::TradeSession.T
-    end
-    default_values(::Type{Trade}) = (;price = 0.0, volume = zero(Int64), timestamp = zero(Int64), trade_type = "", direction = zero(Int64), trade_session = TradeSession.Intraday)
-    field_numbers(::Type{Trade}) = (;price = 1, volume = 2, timestamp = 3, trade_type = 4, direction = 5, trade_session = 6)
-
-    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Trade})
-        price = 0.0
-        volume = zero(Int64)
-        timestamp = zero(Int64)
-        trade_type = ""
-        direction = zero(Int64)
-        trade_session = TradeSession.Intraday
-        while !message_done(d)
-            field_number, wire_type = decode_tag(d)
-            if field_number == 1
-                price = parse(Float64, decode(d, String))
-            elseif field_number == 2
-                volume = decode(d, Int64)
-            elseif field_number == 3
-                timestamp = decode(d, Int64)
-            elseif field_number == 4
-                trade_type = decode(d, String)
-            elseif field_number == 5
-                direction = decode(d, Int64)
-            elseif field_number == 6
-                trade_session = decode(d, TradeSession.T)
-            else
-                skip(d, wire_type)
-            end
-        end
-        return Trade(price, volume, timestamp, trade_type, direction, trade_session)
+        return SubscriptionResponse(sub_list)
     end
 
     # 推送行情数据
@@ -1192,6 +1269,38 @@ module QuoteProtocol
         return PushQuote(symbol, sequence, last_done, open, high, low, timestamp, volume, turnover, trade_status, trade_session, current_volume, current_turnover, tag)
     end
 
+    # 盘口数据
+    struct Depth
+        position::Int64
+        price::Float64
+        volume::Int64           # 挂单量
+        order_num::Int64        # 订单数量
+    end
+    default_values(::Type{Depth}) = (;position = zero(Int64), price = 0.0, volume = zero(Int64), order_num = zero(Int64))
+    field_numbers(::Type{Depth}) = (;position = 1, price = 2, volume = 3, order_num = 4)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Depth})
+        position = zero(Int64)
+        price = 0.0
+        volume = zero(Int64)
+        order_num = zero(Int64)
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                position = decode(d, Int64)
+            elseif field_number == 2
+                price = parse(Float64, decode(d, String))
+            elseif field_number == 3
+                volume = decode(d, Int64)
+                elseif field_number == 4
+                order_num = decode(d, Int64)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return Depth(position, price, volume, order_num)
+    end
+
     # 推送盘口数据
     struct PushDepth
         symbol::String
@@ -1228,6 +1337,30 @@ module QuoteProtocol
         return PushDepth(symbol, sequence, ask, bid)
     end
 
+    # 经纪队列
+    struct Brokers
+        position::Int64
+        broker_ids::Vector{Int64}
+    end
+    default_values(::Type{Brokers}) = (;position = zero(Int64), broker_ids = Int64[])
+    field_numbers(::Type{Brokers}) = (;position = 1, broker_ids = 2)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Brokers})
+        position = zero(Int64)
+        broker_ids = BufferedVector{Int64}()
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                position = decode(d, Int64)
+            elseif field_number == 2
+                decode!(d, wire_type, broker_ids)
+            else
+                skip(d, wire_type)
+            end
+        end
+        return Brokers(position, getindex(broker_ids))
+    end
+
     # 推送经纪队列数据
     struct PushBrokers
         symbol::String
@@ -1235,9 +1368,9 @@ module QuoteProtocol
         ask_brokers::Vector{Brokers}
         bid_brokers::Vector{Brokers}
     end
+
     default_values(::Type{PushBrokers}) = (;symbol = "", sequence = zero(Int64), ask_brokers = Brokers[], bid_brokers = Brokers[])
     field_numbers(::Type{PushBrokers}) = (;symbol = 1, sequence = 2, ask_brokers = 3, bid_brokers = 4)
-
     function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:PushBrokers})
         symbol = ""
         sequence = zero(Int64)
@@ -1264,6 +1397,47 @@ module QuoteProtocol
         return PushBrokers(symbol, sequence, ask_brokers, bid_brokers)
     end
 
+    # 成交明细
+    struct Trade
+        price::Float64
+        volume::Int64
+        timestamp::Int64
+        trade_type::TradeType.T
+        direction::TradeDirection.T
+        trade_session::TradeSession.T
+    end
+    default_values(::Type{Trade}) = (;price = 0.0, volume = zero(Int64), timestamp = zero(Int64), trade_type = TradeType.UnknownTradeType, direction = TradeDirection.Neutral, trade_session = TradeSession.Intraday)
+    field_numbers(::Type{Trade}) = (;price = 1, volume = 2, timestamp = 3, trade_type = 4, direction = 5, trade_session = 6)
+
+    function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:Trade}; symbol::String = "")
+        price = 0.0
+        volume = zero(Int64)
+        timestamp = zero(Int64)
+        trade_type_str = ""
+        direction = TradeDirection.Neutral
+        trade_session = TradeSession.Intraday
+        while !message_done(d)
+            field_number, wire_type = decode_tag(d)
+            if field_number == 1
+                price = parse(Float64, decode(d, String))
+            elseif field_number == 2
+                volume = decode(d, Int64)
+            elseif field_number == 3
+                timestamp = decode(d, Int64)
+            elseif field_number == 4
+                trade_type_str = decode(d, String)
+            elseif field_number == 5
+                direction = TradeDirection.T(decode(d, Int64))
+            elseif field_number == 6
+                trade_session = decode(d, TradeSession.T)
+            else
+                skip(d, wire_type)
+            end
+        end
+        trade_type = trade_type_from_string(trade_type_str, symbol)
+        return Trade(price, volume, timestamp, trade_type, direction, trade_session)
+    end
+
     # 推送成交明细数据
     struct PushTrade
         symbol::String
@@ -1286,7 +1460,7 @@ module QuoteProtocol
             elseif field_number == 3
                 len = decode(d, UInt64)
                 sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
-                push!(trade, decode(sub_d, Trade))
+                push!(trade, decode(sub_d, Trade; symbol=symbol))
             else
                 skip(d, wire_type)
             end
@@ -1698,7 +1872,7 @@ module QuoteProtocol
             elseif field_number == 2
                 len = decode(d, UInt64)
                 sub_d = ProtoDecoder(IOBuffer(read(d.io, len)))
-                push!(trades, decode(sub_d, Trade))
+                push!(trades, decode(sub_d, Trade; symbol=symbol))
             else
                 skip(d, wire_type)
             end

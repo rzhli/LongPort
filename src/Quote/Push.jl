@@ -5,7 +5,7 @@ using ..QuoteProtocol: PushQuote, PushDepth, PushBrokers, PushTrade
 using ..Utils: to_namedtuple
 
 export PushEvent, PushEventDetail, handle_push_event, Callbacks, handle_quote, handle_depth, 
-       handle_brokers, handle_trades, handle_candlesticks
+       handle_brokers, handle_trades
 
 """
 Push event detail types - matching Python SDK
@@ -15,7 +15,6 @@ Push event detail types - matching Python SDK
     DepthEvent = 2
     BrokersEvent = 3
     TradeEvent = 4
-    CandlestickEvent = 5
 end
 
 """
@@ -35,10 +34,9 @@ mutable struct Callbacks
     depth::Union{Function, Nothing}
     brokers::Union{Function, Nothing}
     trades::Union{Function, Nothing}
-    candlestick::Union{Function, Nothing}
     
     function Callbacks()
-        new(nothing, nothing, nothing, nothing, nothing)
+        new(nothing, nothing, nothing, nothing)
     end
 end
 
@@ -56,8 +54,6 @@ function handle_push_event(callbacks::Callbacks, event::PushEvent)
             handle_brokers(callbacks, event.symbol, event.data)
         elseif event.detail_type == TradeEvent
             handle_trades(callbacks, event.symbol, event.data)
-        elseif event.detail_type == CandlestickEvent
-            handle_candlesticks(callbacks, event.symbol, event.data)
         end
     catch e
         @error "Error handling push event" symbol=event.symbol detail_type=event.detail_type exception=e
@@ -116,18 +112,6 @@ function handle_trades(callbacks::Callbacks, symbol::String, trades::PushTrade)
     end
 end
 
-"""
-Handle candlestick push event - matching Python SDK handle_candlesticks
-"""
-function handle_candlestick(callbacks::Callbacks, symbol::String, candlestick::PushCandlestick)
-    if !isnothing(callbacks.candlestick)
-        try
-            Base.invokelatest(callbacks.candlestick, symbol, candlestick)
-        catch e
-            @error "Error in candlestick callback" symbol=symbol exception=e
-        end
-    end
-end
 
 """
 Set Quote callback function
@@ -157,11 +141,5 @@ function set_on_trades!(callbacks::Callbacks, callback::Function)
     callbacks.trades = callback
 end
 
-"""
-Set candlestick callback function
-"""
-function set_on_candlestick!(callbacks::Callbacks, callback::Function)
-    callbacks.candlestick = callback
-end
 
 end # module Push

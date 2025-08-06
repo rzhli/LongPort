@@ -2,7 +2,16 @@ module Utils
 
 using ..QuoteProtocol, Logging, Dates, JSON3
 
-export to_namedtuple
+export to_namedtuple, to_china_time
+
+# Utility function to convert UTC timestamp to China time (UTC+8)
+function to_china_time(timestamp::Int64)
+    return unix2datetime(timestamp) + Hour(8)
+end
+
+function to_china_time(timestamp::String)
+    return unix2datetime(parse(Int64, timestamp)) + Hour(8)
+end
 
 
 """
@@ -27,9 +36,9 @@ function to_namedtuple(obj)
         field_names = fieldnames(typeof(obj))
         field_values = map(field_names) do name
             field_val = getfield(obj, name)
-            if name === :timestamp && field_val isa Number
+            if name === :timestamp && (field_val isa Number || field_val isa String)
                 # Convert protobuf timestamp (seconds) to DateTime
-                return unix2datetime(field_val)
+                return to_china_time(field_val)
             # Recursively convert nested objects
             elseif (isstructtype(typeof(field_val)) && !(field_val isa Union{String, Date, DateTime, Tuple})) ||
                    (field_val isa JSON3.Object || field_val isa JSON3.Array)

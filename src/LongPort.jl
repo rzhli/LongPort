@@ -17,7 +17,7 @@ module LongPort
     include("Trade/Types.jl")
     include("Trade/Trade.jl")
 
-    using .Constant: Market, Granularity
+    using .Constant: Market, Granularity, SecuritiesUpdateMode, SecurityListCategory
     using .QuoteProtocol
     using .ControlProtocol
     using .Cache
@@ -30,9 +30,9 @@ module LongPort
     using .Quote
     
             # Config 模块         Constant 模块
-    export config, from_toml, Market, Granularity,
+    export config, from_toml, Market, Granularity, SecuritiesUpdateMode, SecurityListCategory,
            # QuoteProtocol模块
-           QuoteContext, PushQuote,                                                     # 结构体类型Struct
+           QuoteContext, PushQuote, PushDepth, PushBrokers, PushTrade,                     # 结构体类型Struct
            SubType, CandlePeriod, AdjustType, Direction, WarrantSortBy, SortOrderType,     # 枚举类型Enums
            TradeSession,
 
@@ -47,7 +47,9 @@ module LongPort
            intraday, option_quote, warrant_quote, participants, subscriptions,
            option_chain_dates, option_chain_strikes, warrant_issuers, warrant_filter,
            capital_flow, capital_distribution, calc_indexes, market_temperature,
-           history_market_temperature, member_id, quote_level
+           history_market_temperature, member_id, quote_level,
+           watchlist, create_watchlist_group, delete_watchlist_group, update_watchlist_group,  # 自选股
+           security_list,
 
            # Trade module
            TradeContext,

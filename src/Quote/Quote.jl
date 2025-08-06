@@ -2,9 +2,11 @@ module Quote
 
 using ProtoBuf, JSON3, Dates, Logging, DataFrames
 using ..Config, ..Push, ..Client, ..QuoteProtocol, ..ControlProtocol, ..Constant
+
 using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCommand, Direction,
         SecurityCandlestickRequest, SecurityCandlestickResponse, QuoteSubscribeRequest,
-        QuoteSubscribeResponse, QuoteUnsubscribeRequest, QuoteUnsubscribeResponse, 
+        QuoteSubscribeResponse, QuoteUnsubscribeRequest, QuoteUnsubscribeResponse,
+        SubscriptionRequest, SubscriptionResponse,
         MultiSecurityRequest, SecurityQuoteResponse, SecurityRequest, SecurityDepthResponse,
         SecurityStaticInfo, SecurityStaticInfoResponse, OptionQuoteResponse, 
         WarrantQuoteResponse, SecurityBrokersResponse, ParticipantBrokerIdsResponse,
@@ -18,7 +20,7 @@ using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCom
         
 using ..Client: WSClient
 using ..Cache: SimpleCache, CacheWithKey, get_or_update
-using ..Utils: to_namedtuple
+using ..Utils: to_namedtuple, to_china_time
 
 import ..Errors:LongportException
 
@@ -42,7 +44,9 @@ export QuoteContext,
        option_chain_dates, option_chain_strikes, warrant_issuers, warrant_list,
        trading_session, trading_days, capital_flow, capital_distribution,
        calc_indexes, member_id, quote_level, option_chain_expiry_date_list, 
-       market_temperature, history_market_temperature
+       market_temperature, history_market_temperature,
+       watchlist, create_watchlist_group, delete_watchlist_group, update_watchlist_group,
+       security_list
 
 # --- Command Types for the Core Actor ---
 abstract type AbstractCommand end
@@ -56,8 +60,26 @@ end
 
 struct HttpGetCmd <: AbstractCommand
     path::String
-    params::Dict
+    params::Dict{String,String}
     resp_ch::Channel{Any}           # response channel
+end
+
+struct HttpPostCmd <: AbstractCommand
+    path::String
+    body::Dict{String,Any}
+    resp_ch::Channel{Any}
+end
+
+struct HttpPutCmd <: AbstractCommand
+    path::String
+    body::Dict{String,Any}
+    resp_ch::Channel{Any}
+end
+
+struct HttpDeleteCmd <: AbstractCommand
+    path::String
+    params::Dict{String,Any}
+    resp_ch::Channel{Any}
 end
 
 struct DisconnectCmd <: AbstractCommand end
@@ -122,7 +144,6 @@ function core_run(inner::InnerQuoteContext, push_tx::Channel)
                     break
                 end
             end
-
         catch e
             if e isa InvalidStateException && e.state == :closed
                 # @warn "Command channel closed, shutting down core actor."
@@ -161,7 +182,9 @@ function handle_command(inner::InnerQuoteContext, cmd::AbstractCommand)
             end
             
             local req_body::Vector{UInt8}
-            if cmd.request_pb isa Vector{UInt8}
+            if cmd.request_pb isa SubscriptionRequest
+                req_body = Vector{UInt8}()
+            elseif cmd.request_pb isa Vector{UInt8}
                 req_body = cmd.request_pb
             else
                 io_buf = IOBuffer()
@@ -188,6 +211,12 @@ function handle_command(inner::InnerQuoteContext, cmd::AbstractCommand)
         elseif cmd isa HttpGetCmd
             # Handle HTTP GET requests
             Client.get(inner.config, cmd.path; params=cmd.params)
+        elseif cmd isa HttpPostCmd
+            Client.post(inner.config, cmd.path; body=cmd.body)
+        elseif cmd isa HttpPutCmd
+            Client.put(inner.config, cmd.path; body=cmd.body)
+        elseif cmd isa HttpDeleteCmd
+            Client.delete(inner.config, cmd.path; params=cmd.params)
         end
     catch e
         @error "Failed to handle command" command=typeof(cmd) exception=(e, catch_backtrace())
@@ -284,9 +313,11 @@ function disconnect!(ctx::QuoteContext)
     inner = ctx.inner
     if !isnothing(inner.core_task) && !istaskdone(inner.core_task)
         put!(inner.command_ch, DisconnectCmd())
-        close(inner.command_ch) # Signal shutdown
+        close(inner.command_ch)
+
         wait(inner.core_task)
-        if !isnothing(inner.push_dispatcher_task)
+
+        if !isnothing(inner.push_dispatcher_task) && !istaskdone(inner.push_dispatcher_task)
             wait(inner.push_dispatcher_task)
         end
         # @info "QuoteContext disconnected and cleaned up."
@@ -304,6 +335,10 @@ function request(ctx::QuoteContext, cmd::AbstractCommand)
 end
 
 # --- Callback Setters ---
+# The `subscribe` function tells the server to start sending data.
+# The callback functions below are used to process the data that the server pushes to us.
+# For example, after calling `subscribe` for quote data, you would use `set_on_quote`
+# to provide a function that will be executed each time a new quote arrives.
 function set_on_quote(ctx::QuoteContext, cb::Function); Push.set_on_quote!(ctx.inner.callbacks, cb); end
 function set_on_depth(ctx::QuoteContext, cb::Function); Push.set_on_depth!(ctx.inner.callbacks, cb); end
 function set_on_brokers(ctx::QuoteContext, cb::Function); Push.set_on_brokers!(ctx.inner.callbacks, cb); end
@@ -351,7 +386,7 @@ function candlesticks(
             high = c.high,
             volume = c.volume,
             turnover = c.turnover,
-            timestamp = unix2datetime(c.timestamp)
+            timestamp = to_china_time(c.timestamp)
         )
     end
     return DataFrame(data)
@@ -382,7 +417,7 @@ function history_candlesticks_by_offset(
             high = c.high,
             volume = c.volume,
             turnover = c.turnover,
-            timestamp = unix2datetime(c.timestamp)
+            timestamp = to_china_time(c.timestamp)
         )
     end
     return DataFrame(data)
@@ -411,7 +446,7 @@ function history_candlesticks_by_date(
             high = c.high,
             volume = c.volume,
             turnover = c.turnover,
-            timestamp = unix2datetime(c.timestamp)
+            timestamp = to_china_time(c.timestamp)
         )
     end
     return DataFrame(data)
@@ -452,11 +487,10 @@ function participants(ctx::QuoteContext)
 end
 
 function subscriptions(ctx::QuoteContext)
-    req = Vector{UInt8}()  # Empty request body for subscription query
-    cmd = GenericRequestCmd(QuoteCommand.Subscription, req, QuoteSubscribeResponse, Channel(1))
+    req = SubscriptionRequest()
+    cmd = GenericRequestCmd(QuoteCommand.Subscription, req, SubscriptionResponse, Channel(1))
     resp = request(ctx, cmd)
-    # Return subscriptions in a structured format
-    return [(symbol = s, sub_types = resp.sub_types) for s in resp.symbols]
+    return to_namedtuple(resp.sub_list)
 end
 
 function static_info(ctx::QuoteContext, symbols::Vector{String})
@@ -496,7 +530,7 @@ function intraday(ctx::QuoteContext, symbol::String)
     data = map(resp.lines) do line
         (
             symbol = resp.symbol,
-            timestamp = unix2datetime(line.timestamp),
+            timestamp = to_china_time(line.timestamp),
             price = line.price,
             volume = line.volume,
             turnover = line.turnover,
@@ -622,7 +656,7 @@ function capital_flow(ctx::QuoteContext, symbol::String)
         (
             symbol = resp.symbol,
             inflow = line.inflow,
-            timestamp = unix2datetime(line.timestamp)
+            timestamp = to_china_time(line.timestamp)
         )
     end
     return DataFrame(data)
@@ -690,7 +724,7 @@ function market_temperature(ctx::QuoteContext, market::Market.T)
         get(res.data, :description, ""),
         get(res.data, :valuation, nothing),
         get(res.data, :sentiment, nothing),
-        unix2datetime(parse(Int, get(res.data, :updated_at, "0")))
+        to_china_time(get(res.data, :updated_at, "0"))
     )
     
     return to_namedtuple(temp_response)
@@ -711,7 +745,7 @@ function history_market_temperature(ctx::QuoteContext, market::Market.T, start_d
 
     data = map(res.data.list) do item
         (
-            timestamp = unix2datetime(parse(Int64, item.timestamp)),
+            timestamp = to_china_time(item.timestamp),
             temperature = item.temperature,
             valuation = item.valuation,
             sentiment = item.sentiment
@@ -742,5 +776,77 @@ end
 
 member_id(ctx::QuoteContext) = ctx.inner.member_id
 quote_level(ctx::QuoteContext) = ctx.inner.quote_level
+
+# --- Watchlist API ---
+
+function watchlist(ctx::QuoteContext)
+    """Get watchlist and return a DataFrame with id and name."""
+    cmd = HttpGetCmd("/v1/watchlist/groups", Dict{String, String}(), Channel(1))
+    resp = request(ctx, cmd)
+    
+    groups = resp.data.groups
+
+    watchlist_data = map(groups) do g
+        securities_df = if !isempty(g.securities)
+            df = DataFrame(g.securities)
+            df.watched_price = parse.(Float64, df.watched_price)
+            df.watched_at = to_china_time.(parse.(Int64, df.watched_at))
+            df
+        else
+            DataFrame()
+        end
+        (id = parse(Int64, g.id), name = g.name, securities = securities_df)
+    end
+
+    return DataFrame(watchlist_data)
+end
+
+function create_watchlist_group(ctx::QuoteContext, name::String; securities::Union{Nothing,Vector{String}}=nothing)
+    """Create watchlist group"""
+    body = Dict{String, Any}("name" => name)
+    if !isnothing(securities)
+        body["securities"] = securities
+    end
+    cmd = HttpPostCmd("/v1/watchlist/groups", body, Channel(1))
+    resp = request(ctx, cmd)
+    return parse(Int64, resp.data.id)
+end
+
+function delete_watchlist_group(ctx::QuoteContext, group_id::Int64, purge::Bool)
+    """Delete watchlist group, purge是否清除分组下的股票,true则此分组下的股票将被取消关注,false则此分组下的股票会保留在全部分组中"""
+    params = Dict("id" => group_id, "purge" => purge)
+    cmd = HttpDeleteCmd("/v1/watchlist/groups", params, Channel(1))
+    resp = request(ctx, cmd)
+    return resp.message
+end
+
+function update_watchlist_group(
+    ctx::QuoteContext,
+    group_id::Int64;        # 分组 ID
+    name::Union{Nothing,String}=nothing,  # 分组名称，例如 信息产业组 如果不传递此参数，则分组名称不会更新
+    securities::Union{Nothing,Vector{String}}=nothing,   # 股票列表，例如 ["BABA.US","AAPL.US"] 配合下面的 mode 参数，可完成添加股票、移除股票、对关注列表进行排序等操作
+    mode::SecuritiesUpdateMode.T=SecuritiesUpdateMode.Replace   # 操作方法，可选值：add - 添加，remove - 移除，replace - 替换
+)   # 选 add 时，将上面列表中的股票依序添加到此分组中，选 remove 时，将上面列表中的股票从此分组中移除，选 replace 时，将上面列表中的股票全量覆盖此分组下的股票假如原来分组中的股票为 APPL.US, BABA.US, TSLA.US，使用 ["BABA.US","AAPL.US","MSFT.US"] 更新后变为 ["BABA.US","AAPL.US","MSFT.US"]，对比之前，移除了 TSLA.US，添加了 MSFT.US，BABA.US,AAPL.US 调整了顺序
+    """Update watchlist group"""
+    body = Dict{String, Any}("id" => group_id)
+    if !isnothing(name)
+        body["name"] = name
+    end
+    if !isnothing(securities)
+        body["securities"] = securities
+        body["mode"] = string(mode)
+    end
+    cmd = HttpPutCmd("/v1/watchlist/groups", body, Channel(1))
+    request(ctx, cmd)
+    return nothing
+end
+
+function security_list(ctx::QuoteContext, market::Market.T, category::SecurityListCategory.T)
+    """Get security list"""
+    params = Dict("market" => string(market), "category" => string(category))
+    cmd = HttpGetCmd("/v1/quote/get_security_list", params, Channel(1))
+    resp = request(ctx, cmd)
+    return DataFrame(to_namedtuple(resp.data.list))
+end
 
 end # module Quote

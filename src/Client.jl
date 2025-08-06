@@ -11,7 +11,7 @@ using ..ControlProtocol
 using ..QuoteProtocol
 using ..Errors
 
-export WSClient, refresh_token, post
+export WSClient, refresh_token, post, put, delete
 
 # WebSocket Client Constants (参考 Rust 实现)
 const REQUEST_TIMEOUT = 30.0  # seconds
@@ -178,7 +178,7 @@ end
 post(config::Config.config, path::String, data::Dict) -> JSON3.Object
 通用HTTP POST函数用于交易API
 """
-function post(config::Config.config, path::String, data::Dict)
+function post(config::Config.config, path::String; body::Dict=Dict())
     try
         # 构建请求URL
         base_url = config.http_url
@@ -188,7 +188,7 @@ function post(config::Config.config, path::String, data::Dict)
         timestamp = string(floor(Int, time() * 1000))
         
         # 序列化请求体
-        body = JSON3.write(data)
+        body_str = JSON3.write(body)
         
         # 构建请求头
         headers = Dict{String, String}(
@@ -199,11 +199,11 @@ function post(config::Config.config, path::String, data::Dict)
         )
         
         # 生成签名
-        signature = sign("POST", path, headers, "", body, config)
+        signature = sign("POST", path, headers, "", body_str, config)
         headers["X-Api-Signature"] = signature
         
         # 发送HTTP POST请求
-        response = HTTP.post(full_url, headers = headers, body = body)
+        response = HTTP.post(full_url, headers = headers, body = body_str)
         
         # 检查响应状态
         if response.status >= 400
@@ -222,6 +222,83 @@ function post(config::Config.config, path::String, data::Dict)
         return result
     catch e
         @error "HTTP POST请求异常" path=path exception=(e, catch_backtrace())
+        rethrow(e)
+    end
+end
+
+function put(config::Config.config, path::String; body::Dict=Dict())
+    try
+        base_url = config.http_url
+        full_url = base_url * path
+        timestamp = string(floor(Int, time() * 1000))
+        body_str = JSON3.write(body)
+        
+        headers = Dict{String, String}(
+            "X-Api-Key" => config.app_key,
+            "Authorization" => "Bearer $(config.access_token)",
+            "X-Timestamp" => timestamp,
+            "Content-Type" => "application/json; charset=utf-8"
+        )
+        
+        signature = sign("PUT", path, headers, "", body_str, config)
+        headers["X-Api-Signature"] = signature
+        
+        response = HTTP.put(full_url, headers = headers, body = body_str)
+        
+        if response.status >= 400
+            @error "HTTP PUT请求失败" path=path status=response.status body=String(response.body)
+            throw(LongportException("HTTP PUT请求失败，状态码: $(response.status)"))
+        end
+        
+        result = JSON3.read(response.body)
+        
+        if haskey(result, "code") && result.code != 0
+            @error "API请求失败" path=path code=result.code msg=result.msg
+            throw(LongportException("API请求失败: $(result.msg)"))
+        end
+        
+        return result
+    catch e
+        @error "HTTP PUT请求异常" path=path exception=(e, catch_backtrace())
+        rethrow(e)
+    end
+end
+
+function delete(config::Config.config, path::String; params::Dict=Dict())
+    try
+        base_url = config.http_url
+        query_string = join(["$(k)=$(HTTP.URIs.escapeuri(v))" for (k, v) in params], "&")
+        full_url = base_url * path * (isempty(query_string) ? "" : "?" * query_string)
+        
+        timestamp = string(floor(Int, time() * 1000))
+        
+        headers = Dict{String, String}(
+            "X-Api-Key" => config.app_key,
+            "Authorization" => "Bearer $(config.access_token)",
+            "X-Timestamp" => timestamp,
+            "Content-Type" => "application/json; charset=utf-8"
+        )
+        
+        signature = sign("DELETE", path, headers, query_string, "", config)
+        headers["X-Api-Signature"] = signature
+        
+        response = HTTP.delete(full_url, headers = headers)
+        
+        if response.status >= 400
+            @error "HTTP DELETE请求失败" path=path status=response.status body=String(response.body)
+            throw(LongportException("HTTP DELETE请求失败，状态码: $(response.status)"))
+        end
+        
+        result = JSON3.read(response.body)
+        
+        if haskey(result, "code") && result.code != 0
+            @error "API请求失败" path=path code=result.code msg=result.msg
+            throw(LongportException("API请求失败: $(result.msg)"))
+        end
+        
+        return result
+    catch e
+        @error "HTTP DELETE请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
     end
 end
