@@ -16,7 +16,8 @@ using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCom
         IssuerInfoResponse, WarrantFilterListRequest, FilterConfig, WarrantFilterListResponse,
         FilterWarrantExpiryDate, FilterWarrantInOutBoundsType, WarrantStatus, WarrantType, 
         SortOrderType, WarrantSortBy, MarketTradePeriodResponse, MarketTradeDayRequest, MarketTradeDayResponse,
-        CapitalFlowIntradayRequest, CapitalFlowIntradayResponse, CapitalDistributionResponse, MarketTemperatureResponse
+        CapitalFlowIntradayRequest, CapitalFlowIntradayResponse, CapitalDistributionResponse, MarketTemperatureResponse,
+        SecurityListCategory, SecuritiesUpdateMode
         
 using ..Client: WSClient
 using ..Cache: SimpleCache, CacheWithKey, get_or_update

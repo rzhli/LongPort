@@ -5,8 +5,7 @@ module Constant
     export DEFAULT_HTTP_URL, DEFAULT_HTTP_URL_CN, DEFAULT_QUOTE_WS, 
            DEFAULT_TRADE_WS, DEFAULT_QUOTE_WS_CN, DEFAULT_TRADE_WS_CN, 
            DEFAULT_CLIENT_VERSION, PROTOCOL_VERSION, PushCandlestickMode,
-           CODEC_TYPE, PLATFORM_TYPE, Language, Market, Granularity, SecuritiesUpdateMode,
-           SecurityListCategory
+           CODEC_TYPE, PLATFORM_TYPE, Language, Market, Granularity, SecuritiesUpdateMode
     
     # --- 默认API地址 ---
     const DEFAULT_HTTP_URL = "https://openapi.longportapp.com"
@@ -46,39 +45,4 @@ module Constant
         SG = 4      # SG market
     end
 
-    @enumx Granularity begin
-        Day = 0
-        Week = 1
-        Month = 2
-    end
-
-    @enumx SecuritiesUpdateMode begin
-        Add = 0
-        Remove = 1
-        Replace = 2
-    end
-    
-    function Base.string(s::SecuritiesUpdateMode.T)
-        s == SecuritiesUpdateMode.Add && return "add"
-        s == SecuritiesUpdateMode.Remove && return "remove"
-        s == SecuritiesUpdateMode.Replace && return "replace"
-        throw(ArgumentError("Invalid SecuritiesUpdateMode value"))
-    end
-    
-    function Base.string(g::Granularity.T)
-        g == Granularity.Day && return "day"
-        g == Granularity.Week && return "week"
-        g == Granularity.Month && return "month"
-        throw(ArgumentError("Invalid Granularity value"))
-    end
-
-    @enumx SecurityListCategory begin
-        Overnight = 0
-    end
-
-    function Base.string(c::SecurityListCategory.T)
-        c == SecurityListCategory.Overnight && return "Overnight"
-        throw(ArgumentError("Invalid SecurityListCategory value"))
-    end
-    
 end # module

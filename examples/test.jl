@@ -114,7 +114,7 @@ candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.DAY, 100; trade_ses
 ### 当前市场温度
 resp = market_temperature(ctx, Market.CN)
 
-### 获取历史市场温度
+### 获取历史市场温度（只有日数据，没有周，月数据）
 type, list = history_market_temperature(ctx, Market.US, Date(2024, 1, 1), Date(2025, 2, 1))
 
 
@@ -202,7 +202,7 @@ message = delete_watchlist_group(ctx, 3542782, true)
 ### 更新自选股
 update_watchlist_group(ctx, 10086, name = "WatchList2", securities = ["700.HK", "AAPL.US"], mode = SecuritiesUpdateMode.Add)
 
-### 获取标的列表
+### 获取标的列表（只有中文名称name_cn）
 resp = security_list(ctx, Market.US, SecurityListCategory.Overnight)
 
 disconnect!(ctx)

@@ -149,11 +149,21 @@ unsubscribe(ctx, ["GOOGL.US"], [SubType.QUOTE, SubType.DEPTH])
 - `calc_indexes(ctx, symbols)`: 获取计算指标。
 - `market_temperature(ctx, market)`: 获取市场温度。
 - `history_market_temperature(ctx, market, start_date, end_date)`: 获取历史市场温度。
+- `security_list(ctx, market, category)`: 获取标的列表。
 
 ### 实时行情订阅
 - `set_on_quote(ctx, callback)`: 设置行情推送的回调函数。
+- `set_on_depth(ctx, callback)`: 设置盘口推送的回调函数。
+- `set_on_brokers(ctx, callback)`: 设置经纪队列推送的回调函数。
+- `set_on_trades(ctx, callback)`: 设置成交明细推送的回调函数。
 - `subscribe(ctx, symbols, sub_types)`: 订阅行情。
 - `unsubscribe(ctx, symbols, sub_types)`: 取消订阅。
+
+### 自选股管理
+- `create_watchlist_group(ctx, name; securities)`: 创建自选股分组。
+- `watchlist(ctx)`: 查看自选股分组。
+- `delete_watchlist_group(ctx, group_id, with_securities)`: 删除自选股分组。
+- `update_watchlist_group(ctx, group_id; name, securities, mode)`: 更新自选股分组。
 
 ## 许可证
 

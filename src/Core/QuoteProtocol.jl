@@ -38,7 +38,7 @@ module QuoteProtocol
            CapitalFlowLine, CapitalFlowIntradayRequest, CapitalFlowIntradayResponse,
            CapitalDistribution, CapitalDistributionResponse,
            SecurityCalcQuoteRequest, SecurityCalcQuoteResponse, SecurityCalcIndex, MarketTemperatureResponse,
-           MarketTemperature, HistoryMarketTemperatureResponse
+           MarketTemperature, HistoryMarketTemperatureResponse, SecurityListCategory, SecuritiesUpdateMode
            
     # 行情协议指令定义 - 基于api.proto
     @enumx QuoteCommand begin
@@ -404,6 +404,41 @@ module QuoteProtocol
         else
             return TradeType.UnknownTradeType
         end
+    end
+
+    # 市场下分类，目前只支持 Overnight
+    @enumx SecurityListCategory begin
+        Overnight = 0
+    end
+    function Base.string(c::SecurityListCategory.T)
+        c == SecurityListCategory.Overnight && return "Overnight"
+        throw(ArgumentError("Invalid SecurityListCategory value"))
+    end
+
+    # 历史温度数据颗粒度（暂时没用到）
+    @enumx Granularity begin
+        Day = 0
+        Week = 1
+        Month = 2
+    end
+    function Base.string(g::Granularity.T)
+        g == Granularity.Day && return "day"
+        g == Granularity.Week && return "week"
+        g == Granularity.Month && return "month"
+        throw(ArgumentError("Invalid Granularity value"))
+    end
+
+    # 自选股更新操作方法
+    @enumx SecuritiesUpdateMode begin
+        Add = 0
+        Remove = 1
+        Replace = 2
+    end
+    function Base.string(s::SecuritiesUpdateMode.T)
+        s == SecuritiesUpdateMode.Add && return "add"
+        s == SecuritiesUpdateMode.Remove && return "remove"
+        s == SecuritiesUpdateMode.Replace && return "replace"
+        throw(ArgumentError("Invalid SecuritiesUpdateMode value"))
     end
 
     # 基础请求结构
@@ -2943,9 +2978,9 @@ module QuoteProtocol
 
     function decode(d::ProtoBuf.AbstractProtoDecoder, ::Type{<:MarketTemperature})
         timestamp = 0
-        temperature = 0
-        valuation = 0
-        sentiment = 0
+        temperature = 0     # 温度值
+        valuation = 0       # 估值值
+        sentiment = 0       # 情绪值
         while !message_done(d)
             field_number, wire_type = decode_tag(d)
             if field_number == 1
