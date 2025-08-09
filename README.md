@@ -36,7 +36,7 @@ using Pkg
 Pkg.add("LongPort")
 ```
 
-### 基本使用
+### 行情
 
 ```julia
 using LongPort
