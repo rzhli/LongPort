@@ -1,6 +1,19 @@
 module Errors
 
-export LongportException
+using JSON3
+
+export LongportException, ApiResponse
+
+struct ApiResponse{T}
+    code::Int
+    message::String
+    data::T
+
+    function ApiResponse(body::AbstractString)
+        json = JSON3.read(body)
+        new{typeof(json.data)}(json.code, json.message, json.data)
+    end
+end
 
 struct LongportException <: Exception
     code::Union{Int, Nothing}

@@ -78,14 +78,23 @@ get(config::Config.config, path::String; params::Dict{String, String}=Dict{Strin
 通用HTTP get函数
 """
 
-function get(config::Config.config, path::String; params::Dict{String, String}=Dict{String, String}())
+function get(config::Config.config, path::String; params::Dict{String,Any} = Dict{String,Any}())
     try
         # 构建请求URL
         base_url = config.http_url
-        
-        query_string = join(["$(k)=$(HTTP.URIs.escapeuri(v))" for (k, v) in params], "&")
+        query_parts = []
+        for (k, v) in params
+            if v isa Vector
+                for val in v
+                    push!(query_parts, "$(k)=$(HTTP.URIs.escapeuri(val))")
+                end
+            else
+                push!(query_parts, "$(k)=$(HTTP.URIs.escapeuri(string(v)))")
+            end
+        end
+        query_string = join(query_parts, "&")
         full_url = base_url * path * (isempty(query_string) ? "" : "?" * query_string)
-        
+
         # 生成时间戳
         timestamp = string(floor(Int, time() * 1000))
         
@@ -104,21 +113,7 @@ function get(config::Config.config, path::String; params::Dict{String, String}=D
         # 发送HTTP GET请求
         response = HTTP.get(full_url, headers = headers)
         
-        # 检查响应状态
-        if response.status >= 400
-            @error "HTTP GET请求失败" path=path status=response.status body=String(response.body)
-            throw(LongportException("HTTP GET请求失败，状态码: $(response.status)"))
-        end
-        
-        # 解析JSON响应
-        result = JSON3.read(response.body)
-        
-        if haskey(result, "code") && result.code != 0
-            @error "API请求失败" path=path code=result.code msg=result.msg
-            throw(LongportException("API请求失败: $(result.msg)"))
-        end
-        
-        return result
+        return String(response.body)
     catch e
         @error "HTTP GET请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
@@ -140,7 +135,7 @@ Reference: https://open.longportapp.com/zh-CN/docs/refresh-token-api
 function refresh_token(config::Config.config, expired_at::String)::Dict
     try
         params = Dict("expired_at" => expired_at)
-        result = get(config, "/v1/token/refresh"; params=params)
+        result = ApiResponse(get(config, "/v1/token/refresh"; params=params))
         return result.data
     catch e
         @error "刷新Token失败" exception=(e, catch_backtrace())
@@ -162,12 +157,16 @@ Returns:
 """
 function get_otp(config::Config.config)::NamedTuple{(:otp, :limit, :online), Tuple{String, Int, Int}}
     try
-        result = get(config, "/v1/socket/token")
-        return (
-            otp = result.data.otp,
-            limit = result.data.limit,
-            online = result.data.online
-        )
+        resp = ApiResponse(get(config, "/v1/socket/token"))
+        if resp.code == 0
+            return (
+                otp = resp.data.otp,
+                limit = resp.data.limit,
+                online = resp.data.online
+            )
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
     catch e
         @error "获取OTP失败" exception=(e, catch_backtrace())
         rethrow(e)
@@ -205,21 +204,8 @@ function post(config::Config.config, path::String; body::Dict=Dict())
         # 发送HTTP POST请求
         response = HTTP.post(full_url, headers = headers, body = body_str)
         
-        # 检查响应状态
-        if response.status >= 400
-            @error "HTTP POST请求失败" path=path status=response.status body=String(response.body)
-            throw(LongportException("HTTP POST请求失败，状态码: $(response.status)"))
-        end
-        
-        # 解析JSON响应
-        result = JSON3.read(response.body)
-        
-        if haskey(result, "code") && result.code != 0
-            @error "API请求失败" path=path code=result.code msg=result.msg
-            throw(LongportException("API请求失败: $(result.msg)"))
-        end
-        
-        return result
+        return String(response.body)
+        return String(response.body)
     catch e
         @error "HTTP POST请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
@@ -245,31 +231,29 @@ function put(config::Config.config, path::String; body::Dict=Dict())
         
         response = HTTP.put(full_url, headers = headers, body = body_str)
         
-        if response.status >= 400
-            @error "HTTP PUT请求失败" path=path status=response.status body=String(response.body)
-            throw(LongportException("HTTP PUT请求失败，状态码: $(response.status)"))
-        end
-        
-        result = JSON3.read(response.body)
-        
-        if haskey(result, "code") && result.code != 0
-            @error "API请求失败" path=path code=result.code msg=result.msg
-            throw(LongportException("API请求失败: $(result.msg)"))
-        end
-        
-        return result
+        return String(response.body)
     catch e
         @error "HTTP PUT请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
     end
 end
 
-function delete(config::Config.config, path::String; params::Dict=Dict())
+function delete(config::Config.config, path::String; params::Dict{String,Any} = Dict{String,Any}())
     try
         base_url = config.http_url
-        query_string = join(["$(k)=$(HTTP.URIs.escapeuri(v))" for (k, v) in params], "&")
+        query_parts = []
+        for (k, v) in params
+            if v isa Vector
+                for val in v
+                    push!(query_parts, "$(k)=$(HTTP.URIs.escapeuri(val))")
+                end
+            else
+                push!(query_parts, "$(k)=$(HTTP.URIs.escapeuri(string(v)))")
+            end
+        end
+        query_string = join(query_parts, "&")
         full_url = base_url * path * (isempty(query_string) ? "" : "?" * query_string)
-        
+
         timestamp = string(floor(Int, time() * 1000))
         
         headers = Dict{String, String}(
@@ -284,19 +268,7 @@ function delete(config::Config.config, path::String; params::Dict=Dict())
         
         response = HTTP.delete(full_url, headers = headers)
         
-        if response.status >= 400
-            @error "HTTP DELETE请求失败" path=path status=response.status body=String(response.body)
-            throw(LongportException("HTTP DELETE请求失败，状态码: $(response.status)"))
-        end
-        
-        result = JSON3.read(response.body)
-        
-        if haskey(result, "code") && result.code != 0
-            @error "API请求失败" path=path code=result.code msg=result.msg
-            throw(LongportException("API请求失败: $(result.msg)"))
-        end
-        
-        return result
+        return String(response.body)
     catch e
         @error "HTTP DELETE请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
@@ -323,6 +295,7 @@ mutable struct WSClient
     url::String
     connected::Bool
     seq_id::UInt32
+    session_id::Union{String, Nothing}
     pending_responses::Dict{String, Tuple{UInt8, Vector{UInt8}}}
     auth_data::Union{Nothing,Vector{UInt8}}
     on_push::Union{Function, Nothing}
@@ -336,6 +309,7 @@ mutable struct WSClient
             url,                    # url
             false,                  # connected (只有认证成功后才为true)
             UInt32(1),              # seq_id
+            nothing,                # session_id
             Dict{String, Tuple{UInt8, Vector{UInt8}}}(), # pending_responses
             nothing,                # auth_data
             nothing,
@@ -615,7 +589,9 @@ function start_message_loop(client::WSClient)
                         if cmd == COMMAND_CODE_AUTH
                             if status_code == 0
                                 client.connected = true  # 只有认证成功后才算真正连接
-                                @info "认证成功，连接已建立"
+                                auth_resp = ControlProtocol.decode(body, ControlProtocol.AuthResponse)
+                                client.session_id = auth_resp.session_id
+                                @info "认证成功，连接已建立" session_id=client.session_id
                                 # 只有在认证成功后才启动心跳
                                 start_heartbeat_loop(client)
                             else
@@ -695,6 +671,45 @@ reconnect!(client::WSClient)
 Handles the reconnection logic for the WebSocket client.
 """
 function reconnect!(client::WSClient)
+    if isnothing(client.session_id)
+        @warn "没有 session_id，无法执行快速重连，将执行标准重连"
+        return full_reconnect!(client)
+    end
+
+    @info "尝试使用 session_id 进行快速重连..."
+    try
+        # 1. 物理连接
+        WebSockets.open(client.url; nagle=false, quickack=true) do ws
+            client.ws = ws
+            
+            # 2. 发送 ReconnectRequest
+            reconnect_req = ControlProtocol.ReconnectRequest(client.session_id, Dict{String,String}())
+            req_body = ControlProtocol.encode(reconnect_req)
+            
+            # 使用 ws_request 发送并等待响应
+            resp_body = ws_request(client, COMMAND_CODE_RECONNECT, req_body)
+            
+            # 3. 处理响应
+            reconnect_resp = ControlProtocol.decode(resp_body, ControlProtocol.ReconnectResponse)
+            
+            client.connected = true
+            client.session_id = reconnect_resp.session_id # 更新 session_id
+            @info "快速重连成功" new_session_id=client.session_id
+            
+            # 重启心跳和消息循环
+            start_message_loop(client)
+            start_heartbeat_loop(client)
+            return true
+        end
+    catch e
+        @error "快速重连失败" exception=(e, catch_backtrace())
+        client.connected = false
+        return false
+    end
+    return false # Should not be reached
+end
+
+function full_reconnect!(client::WSClient)
     if !isnothing(client.reconnect_task) && !istaskdone(client.reconnect_task)
         @warn "重连任务已在进行中"
         return
@@ -706,16 +721,16 @@ function reconnect!(client::WSClient)
         max_attempts = 5
         for attempt in 1:max_attempts
             client.reconnect_attempts = attempt
-            @info "尝试重连 (第 $attempt/$max_attempts 次)..."
+            @info "尝试完全重连 (第 $attempt/$max_attempts 次)..."
             try
                 connect!(client)
                 if client.connected
-                    @info "重连成功"
+                    @info "完全重连成功"
                     client.reconnect_attempts = 0
                     return
                 end
             catch e
-                @warn "重连失败" exception=(e, catch_backtrace())
+                @warn "完全重连失败" exception=(e, catch_backtrace())
             end
             
             # Exponential backoff
@@ -724,7 +739,7 @@ function reconnect!(client::WSClient)
             sleep(sleep_duration)
         end
         
-        @error "重连 $max_attempts 次后仍然失败，放弃重连"
+        @error "完全重连 $max_attempts 次后仍然失败，放弃重连"
         client.reconnect_attempts = 0
     end
 end

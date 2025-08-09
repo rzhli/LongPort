@@ -5,7 +5,7 @@ module Constant
     export DEFAULT_HTTP_URL, DEFAULT_HTTP_URL_CN, DEFAULT_QUOTE_WS, 
            DEFAULT_TRADE_WS, DEFAULT_QUOTE_WS_CN, DEFAULT_TRADE_WS_CN, 
            DEFAULT_CLIENT_VERSION, PROTOCOL_VERSION, PushCandlestickMode,
-           CODEC_TYPE, PLATFORM_TYPE, Language, Market, Granularity, SecuritiesUpdateMode
+           CODEC_TYPE, PLATFORM_TYPE, Language, Market, Currency, Granularity, SecuritiesUpdateMode
     
     # --- 默认API地址 ---
     const DEFAULT_HTTP_URL = "https://openapi.longportapp.com"
@@ -28,6 +28,13 @@ module Constant
         ZH_CN = 0  # 简体中文 (default)
         ZH_HK = 1  # 繁體中文 (香港)
         EN = 2     # English
+    end
+
+    # --- Currency Enum ---
+    @enumx Currency begin
+        HKD
+        USD
+        CNH
     end
 
     # --- Push Modes ---

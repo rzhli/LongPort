@@ -4,12 +4,15 @@ LongPort Julia SDK - Test Script
 """
 
 using LongPort, Dates
+
 # Load config from TOML file
 cfg = from_toml()
-# Asynchronously create and connect the QuoteContext
-ctx, channel = try_new(cfg)
 
 # 行情
+
+# Create and connect the QuoteContext
+ctx = QuoteContext(cfg)
+
 ## 拉取  每次请求支持传入的标的数量上限是 500 个
 ### 获取标的基础信息 （DataFrame） 后面三个的 board = ""
 resp = static_info(ctx, ["700.HK", "AAPL.US", "TSLA.US", "NFLX.US"])
@@ -118,8 +121,6 @@ resp = market_temperature(ctx, Market.CN)
 type, list = history_market_temperature(ctx, Market.US, Date(2024, 1, 1), Date(2025, 2, 1))
 
 
-
-
 # 订阅
 
 # 1. Define your callback functions
@@ -153,17 +154,16 @@ end
 =#
 
 ### 订阅行情数据  实时价格推送，实时盘口推送
-subscribe(ctx, ["700.HK"], [SubType.QUOTE, SubType.DEPTH]; is_first_push=true)
+Quote.subscribe(ctx, ["700.HK"], [SubType.QUOTE, SubType.DEPTH]; is_first_push=true)
 ### 取消订阅
-unsubscribe(ctx, ["700.HK"], [SubType.QUOTE, SubType.DEPTH])
+Quote.unsubscribe(ctx, ["700.HK"], [SubType.QUOTE, SubType.DEPTH])
 
-subscribe(ctx, ["601816.SH"], [SubType.QUOTE, SubType.DEPTH]; is_first_push=true)
-unsubscribe(ctx, ["601816.SH"], [SubType.QUOTE, SubType.DEPTH])
+Quote.subscribe(ctx, ["601816.SH"], [SubType.QUOTE, SubType.DEPTH]; is_first_push=true)
+Quote.unsubscribe(ctx, ["601816.SH"], [SubType.QUOTE, SubType.DEPTH])
 
 ### 获取当前订阅及订阅类型
 subs = subscriptions(ctx)
 
-ctx, channel = try_new(cfg)
 ### 实时经纪队列推送
 function on_brokers_callback(symbol::String, event::PushBrokers)
     println("Brokers: $symbol")
@@ -176,8 +176,8 @@ function on_brokers_callback(symbol::String, event::PushBrokers)
 end
 set_on_brokers(ctx, on_brokers_callback)
 
-subscribe(ctx, ["700.HK"], [SubType.BROKERS]; is_first_push=true)
-unsubscribe(ctx, ["700.HK"], [SubType.BROKERS])
+Quote.subscribe(ctx, ["700.HK"], [SubType.BROKERS]; is_first_push=true)
+Quote.unsubscribe(ctx, ["700.HK"], [SubType.BROKERS])
 
 ### 实时成交明细推送
 function on_trades_callback(symbol::String, event::PushTrade)
@@ -187,8 +187,8 @@ function on_trades_callback(symbol::String, event::PushTrade)
     end
 end
 set_on_trades(ctx, on_trades_callback)
-subscribe(ctx, ["700.HK"], [SubType.TRADE]; is_first_push = true)
-unsubscribe(ctx, ["700.HK"], [SubType.TRADE])
+Quote.subscribe(ctx, ["700.HK"], [SubType.TRADE]; is_first_push = true)
+Quote.unsubscribe(ctx, ["700.HK"], [SubType.TRADE])
 
 ### 创建自选股分组
 group_id = create_watchlist_group(ctx, "Watchlist1", securities = ["700.HK", "AAPL.US"])
@@ -197,7 +197,7 @@ group_id = create_watchlist_group(ctx, "Watchlist1", securities = ["700.HK", "AA
 resp = watchlist(ctx)
 
 ### 删除自选股
-message = delete_watchlist_group(ctx, 3542782, true)
+message = delete_watchlist_group(ctx, 3615635, true)
 
 ### 更新自选股
 update_watchlist_group(ctx, 10086, name = "WatchList2", securities = ["700.HK", "AAPL.US"], mode = SecuritiesUpdateMode.Add)
@@ -205,4 +205,154 @@ update_watchlist_group(ctx, 10086, name = "WatchList2", securities = ["700.HK", 
 ### 获取标的列表（只有中文名称name_cn）
 resp = security_list(ctx, Market.US, SecurityListCategory.Overnight)
 
-disconnect!(ctx)
+Quote.disconnect!(ctx)
+
+
+
+
+
+# 交易
+using LongPort, Dates
+
+# Load config from TOML file
+cfg = from_toml()
+
+# Create and connect the TradeContext
+ctx = TradeContext(cfg)
+
+## 成交
+### 获取历史成交明细
+resp = history_executions(ctx)
+resp = history_executions(ctx, GetHistoryExecutionsOptions(symbol = "700.HK", start_at = Date(2024, 5, 9), end_at = Date(2025, 5, 12)))
+
+### 获取当日成交明细
+resp = today_executions(ctx)
+resp = today_executions(ctx, GetTodayExecutionsOptions(symbol = "700.HK"))
+
+## 订单
+### 预估最大购买数量
+resp = estimate_max_purchase_quantity(ctx, EstimateMaxPurchaseQuantityOptions(symbol = "700.HK", order_type = OrderType.LO, side = OrderSide.Buy))
+
+### 获取历史订单
+resp = history_orders(ctx)
+resp = history_orders(
+    ctx, GetHistoryOrdersOptions(
+        symbol = "700.HK",
+        status = [OrderStatus.Filled, OrderStatus.New],
+        side = OrderSide.Buy,
+        start_at = Date(2024, 5, 9),
+        end_at = Date(2025, 5, 12)
+    )
+)
+
+### 订单详情
+resp = order_detail(ctx, "701276261045858304")
+
+### 修改订单
+resp = replace_order(
+    ctx, ReplaceOrderOptions(
+        order_id = "709043056541253632", 
+        submitted_quantity = 100, 
+        submitted_price = 50.0
+    )
+)
+
+### 委托下单,用于港美股，窝轮，期权的委托下单
+
+# 限价单：  
+resp = submit_order(
+    ctx, SubmitOrderOptions(
+        symbol = "700.HK",
+        order_type = OrderType.LO,
+        side = OrderSide.Buy,
+        submitted_quantity = 100,
+        time_in_force = TimeInForceType.Day,       # 表示订单当日有效
+        submitted_price = 480.0         # 需传递submitted_price
+    )
+)
+
+# 平仓卖出 
+resp = submit_order(
+    ctx, SubmitOrderOptions(
+        symbol = "700.HK",
+        order_type = OrderType.MO,      # 市价单
+        side = OrderSide.Sell,
+        submitted_quantity = 100,
+        time_in_force = TimeInForceType.Day,    
+        submitted_price = 380.0         # 需传递submitted_price
+    )
+)
+
+# 到价止盈止损 
+resp = submit_order(
+    ctx, SubmitOrderOptions(
+        symbol = "NVDA.US",
+        order_type = OrderType.LIT,      # 挂单为触价限价单
+        side = OrderSide.Sell,
+        submitted_quantity = 100,
+        time_in_force = TimeInForceType.GTC,    # 订单撤销前有效
+        trigger_price = 1000.0,         # 当行情价格达到触发价格时，订单会被提交
+        submitted_price = 999.0         # 以999.0元提交
+    )
+)
+
+# 跟踪止盈止损 当挂出该条件单以后，如果NVDA.US的市价在下单后的最高点回落0.5%时，
+# 比如最高点为1100USD，回落0.5%为1094.5USD，那么订单会以1094.5USD - 1.2 = 1093.3 USD的价格挂出限价单
+resp = submit_order(
+    ctx, SubmitOrderOptions(
+        symbol = "NVDA.US",
+        side = OrderSide.Sell,
+        order_type = OrderType.TSLPPCT, # 挂单为跟踪止损限价单(跟踪涨跌幅)，如果想要使用跟踪金额，可以使用TSLPAMT，需填trailing_amount
+        time_in_force = TimeInForceType.GTD,    # 订单到期前有效
+        expire_date = "2025-10-30",    # 订单到期时间
+        submitted_quantity = 100,
+        trailing_percent = 0.5,    # 跟踪涨跌幅0.5表示0.5%
+        limit_offset = 1.2,     # 指定价差，1.2 表示 1.2 USD，如果不需要指定价差，可以传递 0 或不传
+    )
+)
+
+### 获取当日订单
+resp = today_orders(ctx)
+resp = today_orders(
+    ctx, GetTodayOrdersOptions(
+        symbol = "700.HK",
+        status = [OrderStatus.Filled, OrderStatus.New],
+        side = OrderSide.Buy
+    )
+)
+
+### 撤销订单
+resp = cancel_order(ctx, "1138677953136173056")
+
+## 交易推送
+function on_order_changed(order_changed)
+    println("Order changed: ", order_changed)
+end
+
+# Set order change callback
+set_on_order_changed(ctx, on_order_changed)
+
+### Subscribe to private topic
+resp = Trade.subscribe(ctx, [TopicType.Private])
+
+### unsubscribe
+resp = Trade.unsubscribe(ctx, [TopicType.Private])
+
+
+## 资产
+
+### 获取账户资金， 用于获取用户每个币种可用、可取、冻结、待结算金额、在途资金 (基金申购赎回) 信息
+resp = account_balance(ctx)
+
+### 获取资金流水, 用于获取资金流入/流出方向、资金类别、资金金额、发生时间、关联股票代码和资金流水说明信息
+resp = cash_flow(ctx; start_at = Date(2024, 5, 9), end_at = Date(2024, 5, 12))
+
+### 获取基金持仓, 用于获取包括账户、基金代码、持有份额、成本净值、当前净值、币种在内的基金持仓信息
+resp = fund_positions(ctx)
+
+### 获取股票持仓, 用于获取包括账户、股票代码、持仓股数、可用股数、持仓均价（按账户设置计算均价方式）、币种在内的股票持仓信息
+resp = stock_positions(ctx)
+
+### 获取保证金比例, 用于获取股票初始保证金比例、维持保证金比例、强平保证金比例
+resp = margin_ratio(ctx, "700.HK")
+

@@ -1,7 +1,7 @@
 module Quote
 
 using ProtoBuf, JSON3, Dates, Logging, DataFrames
-using ..Config, ..Push, ..Client, ..QuoteProtocol, ..ControlProtocol, ..Constant
+using ..Config, ..QuotePush, ..Client, ..QuoteProtocol, ..ControlProtocol, ..Constant
 
 using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCommand, Direction,
         SecurityCandlestickRequest, SecurityCandlestickResponse, QuoteSubscribeRequest,
@@ -34,8 +34,7 @@ Base.getproperty(arc::Arc, sym::Symbol) = getproperty(getfield(arc, :value), sym
 Base.setproperty!(arc::Arc, sym::Symbol, x) = setproperty!(getfield(arc, :value), sym, x)
 
 export QuoteContext, 
-       try_new, disconnect!,
-       realtime_quote, subscribe, unsubscribe, static_info, depth, intraday,
+       disconnect!, realtime_quote, subscribe, unsubscribe, static_info, depth, intraday,
        brokers, trades, candlesticks,
        history_candlesticks_by_offset, history_candlesticks_by_date, 
        option_chain_expiry_date_list, option_chain_info_by_date,
@@ -61,7 +60,7 @@ end
 
 struct HttpGetCmd <: AbstractCommand
     path::String
-    params::Dict{String,String}
+    params::Dict{String,Any}
     resp_ch::Channel{Any}           # response channel
 end
 
@@ -90,10 +89,11 @@ struct DisconnectCmd <: AbstractCommand end
 mutable struct InnerQuoteContext
     config::Config.config
     ws_client::Union{WSClient, Nothing}
+    session_id::Union{String, Nothing}
     command_ch::Channel{Any}
     core_task::Union{Task, Nothing}
     push_dispatcher_task::Union{Task, Nothing}
-    callbacks::Push.Callbacks
+    callbacks::QuotePush.Callbacks
 
     # Caches
     cache_participants::SimpleCache{Vector{Any}}
@@ -123,14 +123,18 @@ function core_run(inner::InnerQuoteContext, push_tx::Channel)
 
     while should_run
         try
-            # 1. Establish Connection
-            ws = WSClient(inner.config.quote_ws_url)
-            inner.ws_client = ws
-            ws.on_push = (cmd, body) -> put!(push_tx, (cmd, body))
-            ws.auth_data = Client.create_auth_request(inner.config)
-            Client.connect!(ws)
-            # @info "Quote WebSocket connected."
-            reconnect_attempts = 0 # Reset on successful connection
+            # 1. Establish Connection or Reconnect
+            if isnothing(inner.ws_client)
+                # First time connection or after a full disconnect
+                ws = WSClient(inner.config.quote_ws_url)
+                inner.ws_client = ws
+                ws.on_push = (cmd, body) -> put!(push_tx, (cmd, body))
+                ws.auth_data = Client.create_auth_request(inner.config)
+                Client.connect!(ws)
+                inner.session_id = ws.session_id # Save session_id
+                # @info "Quote WebSocket connected."
+                reconnect_attempts = 0 # Reset on successful connection
+            end
 
             # TODO: Fetch member_id and quote_level after connection
             # For now, we'll leave them as default.
@@ -150,17 +154,34 @@ function core_run(inner::InnerQuoteContext, push_tx::Channel)
                 # @warn "Command channel closed, shutting down core actor."
                 should_run = false
             elseif e isa LongportException && occursin("WebSocket", e.message)
+                @warn "Connection lost, attempting to reconnect..." exception=(e, catch_backtrace())
+                
+                # Attempt fast reconnect first
+                if !isnothing(inner.ws_client) && Client.reconnect!(inner.ws_client)
+                    @info "Fast reconnect successful."
+                    reconnect_attempts = 0
+                    continue # Skip the full reconnect logic and go to next command loop
+                end
+
+                # Fallback to full reconnect with backoff
                 reconnect_attempts += 1
                 delay = min(60.0, 2.0^reconnect_attempts) # Exponential backoff with max delay
-                @warn "Connection failed, attempting to reconnect in $(delay)s..." exception=(e, catch_backtrace())
+                @warn "Fast reconnect failed, attempting full reconnect in $(delay)s..."
+                
+                # Cleanup before full reconnect
+                if !isnothing(inner.ws_client)
+                    Client.disconnect!(inner.ws_client)
+                    inner.ws_client = nothing
+                end
                 sleep(delay)
+
             else
                 @error "Quote core actor failed with an unhandled exception" exception=(e, catch_backtrace())
                 should_run = false # Exit on unhandled errors
             end
         finally
-            # 3. Cleanup before next loop iteration or exit
-            if !isnothing(inner.ws_client)
+            # 3. Cleanup on graceful shutdown
+            if !should_run && !isnothing(inner.ws_client)
                 Client.disconnect!(inner.ws_client)
                 inner.ws_client = nothing
             end
@@ -243,16 +264,16 @@ function dispatch_push_events(ctx::QuoteContext, push_rx::Channel)
         try
             if command == QuoteCommand.PushQuoteData
                 data = ProtoBuf.decode(decoder, QuoteProtocol.PushQuote)
-                Push.handle_quote(callbacks, data.symbol, data)
+                QuotePush.handle_quote(callbacks, data.symbol, data)
             elseif command == QuoteCommand.PushDepthData
                 data = ProtoBuf.decode(decoder, QuoteProtocol.PushDepth)
-                Push.handle_depth(callbacks, data.symbol, data)
+                QuotePush.handle_depth(callbacks, data.symbol, data)
             elseif command == QuoteCommand.PushBrokersData
                 data = ProtoBuf.decode(decoder, QuoteProtocol.PushBrokers)
-                Push.handle_brokers(callbacks, data.symbol, data)
+                QuotePush.handle_brokers(callbacks, data.symbol, data)
             elseif command == QuoteCommand.PushTradeData
                 data = ProtoBuf.decode(decoder, QuoteProtocol.PushTrade)
-                Push.handle_trades(callbacks, data.symbol, data)
+                QuotePush.handle_trades(callbacks, data.symbol, data)
             else
                 # @warn "Unknown push command" cmd=cmd_code
             end
@@ -266,28 +287,26 @@ end
 # --- Public API ---
 
 @doc """
-Asynchronously creates and initializes a `QuoteContext`.
+Creates and initializes a `QuoteContext`.
 
 This is the main entry point for using the quote API. It sets up the WebSocket connection
 and the background processing task (Actor).
 
 # Arguments
 - `config::Config.config`: The configuration object.
-
-# Returns
-- `(QuoteContext, Channel)`: A tuple containing the `QuoteContext` handle and a `Channel` for receiving raw push events.
 """
-function try_new(config::Config.config)
+function QuoteContext(config::Config.config)
     command_ch = Channel{Any}(32)
     push_ch = Channel{Any}(Inf)     # a `Channel` for receiving raw push events
 
     inner = InnerQuoteContext(
         config,
         nothing, # ws_client
+        nothing, # session_id
         command_ch,
         nothing, # core_task
         nothing, # push_dispatcher_task
-        Push.Callbacks(),
+        QuotePush.Callbacks(),
         # Caches
         SimpleCache{Vector{Any}}(1800.0),
         SimpleCache{Vector{Any}}(1800.0),
@@ -304,7 +323,7 @@ function try_new(config::Config.config)
     inner.core_task = @async core_run(inner, push_ch)
     inner.push_dispatcher_task = @async dispatch_push_events(ctx, push_ch)
 
-    return (ctx, push_ch)
+    return ctx
 end
 
 @doc """
@@ -332,6 +351,9 @@ function request(ctx::QuoteContext, cmd::AbstractCommand)
     if resp isa Exception
         throw(resp)
     end
+    if resp isa String
+        return JSON3.read(resp)
+    end
     return resp
 end
 
@@ -340,11 +362,11 @@ end
 # The callback functions below are used to process the data that the server pushes to us.
 # For example, after calling `subscribe` for quote data, you would use `set_on_quote`
 # to provide a function that will be executed each time a new quote arrives.
-function set_on_quote(ctx::QuoteContext, cb::Function); Push.set_on_quote!(ctx.inner.callbacks, cb); end
-function set_on_depth(ctx::QuoteContext, cb::Function); Push.set_on_depth!(ctx.inner.callbacks, cb); end
-function set_on_brokers(ctx::QuoteContext, cb::Function); Push.set_on_brokers!(ctx.inner.callbacks, cb); end
-function set_on_trades(ctx::QuoteContext, cb::Function); Push.set_on_trades!(ctx.inner.callbacks, cb); end
-function set_on_candlestick(ctx::QuoteContext, cb::Function); Push.set_on_candlestick!(ctx.inner.callbacks, cb); end
+function set_on_quote(ctx::QuoteContext, cb::Function); QuotePush.set_on_quote!(ctx.inner.callbacks, cb); end
+function set_on_depth(ctx::QuoteContext, cb::Function); QuotePush.set_on_depth!(ctx.inner.callbacks, cb); end
+function set_on_brokers(ctx::QuoteContext, cb::Function); QuotePush.set_on_brokers!(ctx.inner.callbacks, cb); end
+function set_on_trades(ctx::QuoteContext, cb::Function); QuotePush.set_on_trades!(ctx.inner.callbacks, cb); end
+function set_on_candlestick(ctx::QuoteContext, cb::Function); QuotePush.set_on_candlestick!(ctx.inner.callbacks, cb); end
 
 # --- Data API ---
 
@@ -559,14 +581,14 @@ end
 
 function option_chain_dates(ctx::QuoteContext, symbol::String)
     """Get option chain expiry dates for a symbol"""
-    cmd = HttpGetCmd("/v1/quote/option-chain-dates", Dict("symbol" => symbol), Channel(1))
+    cmd = HttpGetCmd("/v1/quote/option-chain-dates", Dict{String, Any}("symbol" => symbol), Channel(1))
     return request(ctx, cmd)
 end
 
 function option_chain_strikes(ctx::QuoteContext, symbol::String, expiry_date::String)
     """Get option chain strike prices for a symbol and expiry date"""
     cmd = HttpGetCmd("/v1/quote/option-chain-strikes", 
-        Dict("symbol" => symbol, "expiry_date" => expiry_date), Channel(1))
+        Dict{String, Any}("symbol" => symbol, "expiry_date" => expiry_date), Channel(1))
     return request(ctx, cmd)
 end
 
@@ -717,7 +739,7 @@ end
 
 function market_temperature(ctx::QuoteContext, market::Market.T)
     """Get market temperature"""
-    cmd = HttpGetCmd("/v1/quote/market_temperature", Dict("market" => string(market)), Channel(1))
+    cmd = HttpGetCmd("/v1/quote/market_temperature", Dict{String, Any}("market" => string(market)), Channel(1))
     res = request(ctx, cmd)
     
     temp_response = MarketTemperatureResponse(
@@ -736,7 +758,7 @@ function history_market_temperature(ctx::QuoteContext, market::Market.T, start_d
     
     Note: This endpoint currently only supports daily granularity.
     """
-    params = Dict(
+    params = Dict{String, Any}(
         "market" => string(market),
         "start_date" => Dates.format(start_date, "yyyymmdd"),
         "end_date" => Dates.format(end_date, "yyyymmdd")
@@ -782,13 +804,13 @@ quote_level(ctx::QuoteContext) = ctx.inner.quote_level
 
 function watchlist(ctx::QuoteContext)
     """Get watchlist and return a DataFrame with id and name."""
-    cmd = HttpGetCmd("/v1/watchlist/groups", Dict{String, String}(), Channel(1))
+    cmd = HttpGetCmd("/v1/watchlist/groups", Dict{String, Any}(), Channel(1))
     resp = request(ctx, cmd)
     
     groups = resp.data.groups
 
     watchlist_data = map(groups) do g
-        securities_df = if !isempty(g.securities)
+        securities_df = if hasproperty(g, :securities) && !isempty(g.securities)
             df = DataFrame(g.securities)
             df.watched_price = parse.(Float64, df.watched_price)
             df.watched_at = to_china_time.(parse.(Int64, df.watched_at))
@@ -844,7 +866,7 @@ end
 
 function security_list(ctx::QuoteContext, market::Market.T, category::SecurityListCategory.T)
     """Get security list"""
-    params = Dict("market" => string(market), "category" => string(category))
+    params = Dict{String, Any}("market" => string(market), "category" => string(category))
     cmd = HttpGetCmd("/v1/quote/get_security_list", params, Channel(1))
     resp = request(ctx, cmd)
     return DataFrame(to_namedtuple(resp.data.list))

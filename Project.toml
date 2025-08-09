@@ -4,7 +4,7 @@ keywords = ["LongPort", "openapi", "sdk", "finance"]
 license = "MIT"
 authors = ["rzhli <tayuebuliuhen@gmail.com>"]
 description = "A Julia library for LongPort Open API"
-version = "0.2.3"
+version = "0.2.4"
 
 [deps]
 Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"

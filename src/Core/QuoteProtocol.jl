@@ -4,7 +4,7 @@
 module QuoteProtocol
 
     using ProtoBuf
-    using ProtoBuf.EnumX: @enumx
+    using EnumX
     using ProtoBuf.Codecs: BufferedVector
     using Dates
     import ProtoBuf: ProtoDecoder, decode, encode, _encoded_size, skip, message_done, decode_tag, default_values, field_numbers

@@ -1,10 +1,10 @@
-module Push
+module QuotePush
 
     using ..QuoteProtocol: PushQuote, PushDepth, PushBrokers, PushTrade
     using ..Utils: to_namedtuple
 
     export PushEvent, PushEventDetail, handle_push_event, Callbacks, handle_quote, handle_depth, 
-        handle_brokers, handle_trades
+           handle_brokers, handle_trades
 
     """
     Push event detail types - matching Python SDK
@@ -137,4 +137,4 @@ module Push
     function set_on_trades!(callbacks::Callbacks, callback::Function)
         callbacks.trades = callback
     end
-end # module Push
+end # module QuotePush

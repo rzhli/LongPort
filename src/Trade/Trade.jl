@@ -1,395 +1,405 @@
 module Trade
 
-using ..Config
-using ..TradeTypes
-using ..Client
-using JSON3
-using Dates
+    using JSON3, Dates, Logging 
+    import ProtoBuf as PB
 
-# Include the Push module
-include("Push.jl")
-using .Push
+    using ..Constant
+    using ..Config
+    using ..Client
+    using ..Errors
+    using ..TradePush
+    using ..TradeProtocol
 
-export TradeContext, submit_order, get_orders, set_on_order_changed, set_on_order_status,
-       cancel_order, replace_order, get_account_balance, get_cash_flow, get_fund_positions,
-       get_positions, get_margin_ratio, estimate_max_purchase_quantity, get_executions,
-       get_history_executions, get_order_detail
-
-
-mutable struct TradeContext
-    config::Config.config
-    callbacks::Push.Callbacks
+    # --- Public API ---
+    export TradeContext, disconnect!, subscribe, unsubscribe, history_executions, today_executions,
+           history_orders, today_orders, replace_order, submit_order, cancel_order, account_balance,
+           cash_flow, fund_positions, stock_positions, margin_ratio, order_detail, estimate_max_purchase_quantity,
+           set_on_order_changed
     
+    # --- Core Actor Implementation ---
+    struct Arc{T}
+        value::T
+    end
+
+    Base.getproperty(arc::Arc, sym::Symbol) = getproperty(getfield(arc, :value), sym)
+
+    abstract type AbstractCommand end
+
+    struct HttpGetCmd <: AbstractCommand
+        path::String
+        params::Dict{String,Any}
+        resp_ch::Channel{Any}
+    end
+
+    struct HttpPostCmd <: AbstractCommand
+        path::String
+        body::Any
+        resp_ch::Channel{Any}
+    end
+
+    struct HttpPutCmd <: AbstractCommand
+        path::String
+        body::Any
+        resp_ch::Channel{Any}
+    end
+
+    struct HttpDeleteCmd <: AbstractCommand
+        path::String
+        params::Dict{String,Any}
+        resp_ch::Channel{Any}
+    end
+
+    struct SubscribeCmd <: AbstractCommand
+        topics::Vector{String}
+        resp_ch::Channel{Any}
+    end
+
+    struct UnsubscribeCmd <: AbstractCommand
+        topics::Vector{String}
+        resp_ch::Channel{Any}
+    end
+
+    struct DisconnectCmd <: AbstractCommand end
+
+    mutable struct InnerTradeContext
+        config::Config.config
+        ws_client::Union{Client.WSClient,Nothing}
+        command_ch::Channel{Any}
+        core_task::Union{Task,Nothing}
+        callbacks::Callbacks
+    end
+
+    struct TradeContext
+        inner::Arc{InnerTradeContext}
+    end
+
+    function core_run(inner::InnerTradeContext)
+        should_run = true
+        reconnect_attempts = 0
+
+        while should_run
+            try
+                ws = Client.WSClient(inner.config.trade_ws_url)
+                inner.ws_client = ws
+                ws.on_push =
+                    (cmd, body) -> begin
+                        command = Command.T(cmd)
+                        if command == Command.CMD_NOTIFY
+                            n = PB.decode(IOBuffer(body), Notification)
+                            handle_push_event!(inner.callbacks, n)
+                        else
+                            @warn "Unknown trade push command" cmd = cmd
+                        end
+                    end
+                ws.auth_data = Client.create_auth_request(inner.config)
+                Client.connect!(ws)
+                reconnect_attempts = 0
+
+                while isopen(inner.command_ch)
+                    cmd = take!(inner.command_ch)
+                    handle_command(inner, cmd)
+                    if cmd isa DisconnectCmd
+                        should_run = false
+                        break
+                    end
+                end
+            catch e
+                if e isa InvalidStateException && e.state == :closed
+                    should_run = false
+                elseif e isa LongportError && e.code == "ws-disconnected"
+                    reconnect_attempts += 1
+                    delay = min(60.0, 2.0^reconnect_attempts)
+                    @warn "Connection failed, reconnecting in $(delay)s..." exception =
+                        (e, catch_backtrace())
+                    sleep(delay)
+                else
+                    @error "Trade core actor failed" exception = (e, catch_backtrace())
+                    should_run = false
+                end
+            finally
+                if !isnothing(inner.ws_client)
+                    Client.disconnect!(inner.ws_client)
+                    inner.ws_client = nothing
+                end
+            end
+        end
+    end
+
+    function handle_command(inner::InnerTradeContext, cmd::AbstractCommand)
+        resp = try
+            if cmd isa DisconnectCmd
+                nothing
+            elseif cmd isa SubscribeCmd
+                req = TradeProtocol.Sub(cmd.topics)
+                io_buf = IOBuffer()
+                encoder = PB.ProtoEncoder(io_buf)
+                PB.encode(encoder, req)
+                resp_body = Client.ws_request(inner.ws_client, UInt8(TradeProtocol.Command.CMD_SUB), take!(io_buf))
+                decoder = PB.ProtoDecoder(IOBuffer(resp_body))
+                PB.decode(decoder, SubResponse)
+            elseif cmd isa UnsubscribeCmd
+                req = TradeProtocol.Unsub(cmd.topics)
+                io_buf = IOBuffer()
+                encoder = PB.ProtoEncoder(io_buf)
+                PB.encode(encoder, req)
+                resp_body = Client.ws_request(inner.ws_client, UInt8(TradeProtocol.Command.CMD_UNSUB), take!(io_buf))
+                decoder = PB.ProtoDecoder(IOBuffer(resp_body))
+                PB.decode(decoder, UnsubResponse)
+            elseif cmd isa HttpGetCmd
+                ApiResponse(Client.get(inner.config, cmd.path; params = cmd.params))
+            elseif cmd isa HttpPostCmd
+                ApiResponse(Client.post(inner.config, cmd.path; body = cmd.body))
+            elseif cmd isa HttpPutCmd
+                ApiResponse(Client.put(inner.config, cmd.path; body = cmd.body))
+            elseif cmd isa HttpDeleteCmd
+                ApiResponse(Client.delete(inner.config, cmd.path; params = cmd.params))
+            end
+        catch e
+            @error "Failed to handle command" command = typeof(cmd) exception = (e, catch_backtrace())
+            e
+        end
+
+        if !(cmd isa DisconnectCmd) && isopen(cmd.resp_ch)
+            put!(cmd.resp_ch, resp)
+        end
+    end
+
     function TradeContext(config::Config.config)
-        new(config, Push.Callbacks())
+        command_ch = Channel{Any}(32)
+
+        inner = InnerTradeContext(config, nothing, command_ch, nothing, Callbacks())
+        ctx = TradeContext(Arc(inner))
+
+        inner.core_task = @async core_run(inner)
+
+        return ctx
     end
-end
 
-"""
-submit_order(ctx::TradeContext, symbol::String, order_type, side, quantity, time_in_force; kwargs...)
-
-提交订单，类似Python SDK的ctx.submit_order()
-
-# Arguments
-- `symbol::String`: 股票代码
-- `order_type`: 订单类型 (OrderType enum)
-- `side`: 买卖方向 (OrderSide enum)  
-- `quantity::Int`: 数量
-- `time_in_force`: 时效性 (TimeInForceType enum)
-- `price::Float64=0.0`: 价格(市价单可为0)
-- `outside_rth::OutsideRTH=RTH`: 盘前盘后
-- `remark::String=""`: 备注
-
-# Returns
-- `SubmitOrderResponse`: 包含订单ID的响应
-"""
-function submit_order(
-    ctx::TradeContext, 
-    symbol::String, 
-    order_type, 
-    side, 
-    quantity::Int, 
-    time_in_force; 
-    price::Float64=0.0,
-    outside_rth=TradeTypes.RTH,
-    remark::String=""
-)
-    # 构建订单参数
-    params = Dict{String, Any}(
-        "symbol" => symbol,
-        "order_type" => Int(order_type),
-        "side" => Int(side),
-        "submitted_quantity" => quantity,
-        "time_in_force" => Int(time_in_force),
-        "remark" => remark,
-        "outside_rth" => Int(outside_rth)
-    )
-    
-    # 只有限价单需要价格
-    if order_type != TradeTypes.MO  # 不是市价单
-        params["submitted_price"] = string(price)
-    end
-    
-    try
-        # 使用POST方法提交订单
-        result = Client.post(ctx.config, "/v1/trade/order", params)
-        
-        if haskey(result, "data")
-            return TradeTypes.SubmitOrderResponse(result.data)
-        else
-            throw(LongportException("提交订单失败: 响应格式异常"))
+    function disconnect!(ctx::TradeContext)
+        inner = ctx.inner
+        if !isnothing(inner.core_task) && !istaskdone(inner.core_task)
+            put!(inner.command_ch, DisconnectCmd())
+            close(inner.command_ch)
+            wait(inner.core_task)
         end
-    catch e
-        @error "提交订单失败" symbol=symbol exception=(e, catch_backtrace())
-        rethrow(e)
     end
-end
 
-"""
-get_orders(ctx::TradeContext; symbol::String="", status::Vector{OrderStatus}=OrderStatus[], side::OrderSide=OrderSide.UnknownSide, market::String="", order_id::String="")
-
-获取订单列表，类似Python SDK的ctx.get_orders()
-
-# Arguments  
-- `symbol::String=""`: 股票代码过滤
-- `status::Vector{OrderStatus}=[]`: 订单状态过滤
-- `side::OrderSide=OrderSide.UnknownSide`: 买卖方向过滤
-- `market::String=""`: 市场过滤
-- `order_id::String=""`: 订单ID过滤
-
-# Returns
-- `Vector`: 订单列表
-"""
-function get_orders(
-    ctx::TradeContext; 
-    symbol::String="", 
-    status::Vector{OrderStatus}=OrderStatus[], 
-    side::OrderSide=OrderSide.UnknownSide,
-    market::String="", 
-    order_id::String=""
-)
-    # 构建查询参数
-    params = Dict{String, String}()
-    
-    !isempty(symbol) && (params["symbol"] = symbol)
-    !isempty(status) && (params["status"] = join([string(Int(s)) for s in status], ","))
-    side != OrderSide.UnknownSide && (params["side"] = string(Int(side)))
-    !isempty(market) && (params["market"] = market)
-    !isempty(order_id) && (params["order_id"] = order_id)
-    
-    try
-        # 使用GET方法查询订单
-        result = Client.get(ctx.config, "/v1/trade/orders"; params=params)
-        
-        if haskey(result, "data") && haskey(result.data, "orders")
-            return result.data.orders
-        else
-            @warn "获取订单列表: 响应格式异常" result=result
-            return []
+    function request(ctx::TradeContext, cmd::AbstractCommand)
+        put!(ctx.inner.command_ch, cmd)
+        resp = take!(cmd.resp_ch)
+        if resp isa Exception
+            throw(resp)
         end
-    catch e
-        @error "获取订单列表失败" exception=(e, catch_backtrace())
-        rethrow(e)
+        return resp
     end
-end
 
-"""
-set_on_order_changed(ctx::TradeContext, callback::Function)
-
-设置订单变更推送回调函数，参照Python SDK
-"""
-function set_on_order_changed(ctx::TradeContext, callback::Function)
-    Push.set_on_order_changed!(ctx.callbacks, callback)
-    @info "订单变更推送回调函数已设置"
-end
-
-"""
-set_on_order_status(ctx::TradeContext, callback::Function)
-
-设置订单状态推送回调函数，参照Python SDK
-"""
-function set_on_order_status(ctx::TradeContext, callback::Function)
-    Push.set_on_order_status!(ctx.callbacks, callback)
-    @info "订单状态推送回调函数已设置"
-end
-
-# --- Additional Trade Functions ---
-
-"""
-cancel_order(ctx::TradeContext, order_id::String)
-
-取消订单
-"""
-function cancel_order(ctx::TradeContext, order_id::String)
-    params = Dict("order_id" => order_id)
-    
-    try
-        result = Client.post(ctx.config, "/v1/trade/order/cancel", params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "取消订单失败" order_id=order_id exception=(e, catch_backtrace())
-        rethrow(e)
+    function to_dict(opts)
+        d = Dict{String,Any}()
+        for name in fieldnames(typeof(opts))
+            val = getfield(opts, name)
+            if !isnothing(val)
+                key = string(name)
+                if val isa Date || val isa DateTime
+                    d[key] = string(round(Int, datetime2unix(DateTime(val))))
+                elseif val isa Vector && !isempty(val)
+                    d[key] = [v isa Enum ? Int(v) : string(v) for v in val]
+                elseif val isa Enum
+                    d[key] = Int(val)
+                else
+                    d[key] = val
+                end
+            end
+        end
+        d
     end
-end
 
-"""
-replace_order(ctx::TradeContext, order_id::String; quantity::Int=0, price::Float64=0.0)
+    function set_on_order_changed(ctx::TradeContext, cb::Function); TradePush.set_on_order_changed!(ctx.inner.callbacks, cb); end
 
-修改订单
-"""
-function replace_order(ctx::TradeContext, order_id::String; quantity::Int=0, price::Float64=0.0)
-    params = Dict{String, Any}("order_id" => order_id)
-    quantity > 0 && (params["quantity"] = quantity)
-    price > 0.0 && (params["price"] = string(price))
-    
-    try
-        result = Client.post(ctx.config, "/v1/trade/order/replace", params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "修改订单失败" order_id=order_id exception=(e, catch_backtrace())
-        rethrow(e)
+    function subscribe(ctx::TradeContext, topics::Vector{TopicType.T})
+        ch = Channel(1)
+        cmd = SubscribeCmd([string(t) for t in topics], ch)
+        request(ctx, cmd)
     end
-end
 
-"""
-get_account_balance(ctx::TradeContext; currency::String="")
-
-获取账户余额
-"""
-function get_account_balance(ctx::TradeContext; currency::String="")
-    params = isempty(currency) ? Dict{String, String}() : Dict("currency" => currency)
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/account/balance"; params=params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "获取账户余额失败" exception=(e, catch_backtrace())
-        rethrow(e)
+    function unsubscribe(ctx::TradeContext, topics::Vector{TopicType.T})
+        ch = Channel(1)
+        cmd = UnsubscribeCmd([string(t) for t in topics], ch)
+        request(ctx, cmd)
     end
-end
 
-"""
-get_cash_flow(ctx::TradeContext, start_time::String, end_time::String; page::Int=1, size::Int=50)
-
-获取资金流水
-"""
-function get_cash_flow(ctx::TradeContext, start_time::String, end_time::String; page::Int=1, size::Int=50)
-    params = Dict(
-        "start_time" => start_time,
-        "end_time" => end_time,
-        "page" => string(page),
-        "size" => string(size)
-    )
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/cash-flow"; params=params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "获取资金流水失败" exception=(e, catch_backtrace())
-        rethrow(e)
+    function history_executions(ctx::TradeContext)
+        history_executions(ctx, GetHistoryExecutionsOptions())
     end
-end
 
-"""
-get_fund_positions(ctx::TradeContext; symbols::Vector{String}=String[])
-
-获取基金持仓
-"""
-function get_fund_positions(ctx::TradeContext; symbols::Vector{String}=String[])
-    params = isempty(symbols) ? Dict{String, String}() : Dict("symbols" => join(symbols, ","))
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/fund-positions"; params=params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "获取基金持仓失败" exception=(e, catch_backtrace())
-        rethrow(e)
+    function history_executions(ctx::TradeContext, options::GetHistoryExecutionsOptions)
+        cmd = HttpGetCmd("/v1/trade/execution/history", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return ExecutionResponse(Dict(resp.data))
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
     end
-end
 
-"""
-get_positions(ctx::TradeContext; symbols::Vector{String}=String[])
-
-获取股票持仓
-"""
-function get_positions(ctx::TradeContext; symbols::Vector{String}=String[])
-    params = isempty(symbols) ? Dict{String, String}() : Dict("symbols" => join(symbols, ","))
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/stock-positions"; params=params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "获取股票持仓失败" exception=(e, catch_backtrace())
-        rethrow(e)
+    function today_executions(ctx::TradeContext)
+        today_executions(ctx, GetTodayExecutionsOptions())
     end
-end
 
-"""
-get_margin_ratio(ctx::TradeContext, symbol::String) 
-
-获取保证金比例
-"""
-function get_margin_ratio(ctx::TradeContext, symbol::String)
-    params = Dict("symbol" => symbol)
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/margin-ratio"; params=params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "获取保证金比例失败" symbol=symbol exception=(e, catch_backtrace())
-        rethrow(e)
+    function today_executions(ctx::TradeContext, options::GetTodayExecutionsOptions)
+        cmd = HttpGetCmd("/v1/trade/execution/today", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return TodayExecutionResponse(Dict(resp.data))
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
     end
-end
 
-"""
-estimate_max_purchase_quantity(ctx::TradeContext, symbol::String, order_type, side::OrderSide; price::Float64=0.0)
-
-估算最大可买数量
-"""
-function estimate_max_purchase_quantity(ctx::TradeContext, symbol::String, order_type, side::OrderSide; price::Float64=0.0)
-    params = Dict{String, Any}(
-        "symbol" => symbol,
-        "order_type" => Int(order_type),
-        "side" => Int(side)
-    )
-    price > 0.0 && (params["price"] = string(price))
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/estimate-max-purchase-quantity"; params=params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "估算最大可买数量失败" symbol=symbol exception=(e, catch_backtrace())
-        rethrow(e)
+    function history_orders(ctx::TradeContext)
+        history_orders(ctx, GetHistoryOrdersOptions())
     end
-end
 
-"""
-处理WebSocket推送事件
-参照Python版本的handle_push_event
-"""
-function handle_push_event!(ctx::TradeContext, json_data::String)
-    result = Push.parse_push_event(json_data)
-    if !isnothing(result)
-        event_type, data = result
-        Push.handle_push_event!(ctx.callbacks, event_type, data)
+    function history_orders(ctx::TradeContext, options::GetHistoryOrdersOptions)
+        cmd = HttpGetCmd("/v1/trade/order/history", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return [Order(Dict(o)) for o in resp.data.orders]
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
     end
-end
 
-# 为TradeContext添加方法调用的便利函数，类似Python对象方法
-Base.getproperty(ctx::TradeContext, name::Symbol) = begin
-    if name == :submit_order
-        return (symbol::String, order_type, side, quantity, time_in_force; kwargs...) -> submit_order(ctx, symbol, order_type, side, quantity, time_in_force; kwargs...)
-    elseif name == :get_orders
-        return () -> get_orders(ctx)
-    elseif name == :set_on_order_changed
-        return (callback::Function) -> set_on_order_changed(ctx, callback)
-    elseif name == :set_on_order_status
-        return (callback::Function) -> set_on_order_status(ctx, callback)
-    else
-        return getfield(ctx, name)
+    function today_orders(ctx::TradeContext)
+        today_orders(ctx, GetTodayOrdersOptions())
     end
-end
 
-"""
-get_executions(ctx::TradeContext; symbol::String="", start_time::String="", end_time::String="")
-
-获取今日成交记录
-"""
-function get_executions(ctx::TradeContext; symbol::String="", start_time::String="", end_time::String="")
-    params = Dict{String, String}()
-    
-    !isempty(symbol) && (params["symbol"] = symbol)
-    !isempty(start_time) && (params["start_time"] = start_time)
-    !isempty(end_time) && (params["end_time"] = end_time)
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/execution/today"; params=params)
-        return haskey(result, "data") && haskey(result.data, "trades") ? result.data.trades : []
-    catch e
-        @error "获取今日成交记录失败" exception=(e, catch_backtrace())
-        rethrow(e)
+    function today_orders(ctx::TradeContext, options::GetTodayOrdersOptions)
+        cmd = HttpGetCmd("/v1/trade/order/today", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return [Order(Dict(o)) for o in resp.data.orders]
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
     end
-end
 
-"""
-get_history_executions(ctx::TradeContext, start_time::String, end_time::String; symbol::String="", page::Int=1, size::Int=50)
-
-获取历史成交记录
-"""
-function get_history_executions(ctx::TradeContext, start_time::String, end_time::String; symbol::String="", page::Int=1, size::Int=50)
-    params = Dict{String, String}(
-        "start_time" => start_time,
-        "end_time" => end_time,
-        "page" => string(page),
-        "size" => string(size)
-    )
-    
-    !isempty(symbol) && (params["symbol"] = symbol)
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/execution/history"; params=params)
-        return haskey(result, "data") && haskey(result.data, "trades") ? result.data.trades : []
-    catch e
-        @error "获取历史成交记录失败" exception=(e, catch_backtrace())
-        rethrow(e)
+    function replace_order(ctx::TradeContext, options::ReplaceOrderOptions)
+        cmd = HttpPutCmd("/v1/trade/order", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code != 0
+            throw(LongportException(resp.code, "", resp.message))
+        end
+        return nothing
     end
-end
 
-"""
-get_order_detail(ctx::TradeContext, order_id::String)
-
-获取订单详情
-"""
-function get_order_detail(ctx::TradeContext, order_id::String)
-    params = Dict("order_id" => order_id)
-    
-    try
-        result = Client.get(ctx.config, "/v1/trade/order"; params=params)
-        return haskey(result, "data") ? result.data : nothing
-    catch e
-        @error "获取订单详情失败" order_id=order_id exception=(e, catch_backtrace())
-        rethrow(e)
+    function submit_order(ctx::TradeContext, options::SubmitOrderOptions)
+        cmd = HttpPostCmd("/v1/trade/order", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return SubmitOrderResponse(Dict(resp.data))
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
     end
-end
 
-end # module TradeContext
+    function cancel_order(ctx::TradeContext, order_id::String)
+        params = Dict{String,Any}("order_id" => string(order_id))
+        cmd = HttpDeleteCmd("/v1/trade/order", params, Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code != 0
+            throw(LongportException(resp.code, "", resp.message))
+        end
+        return nothing
+    end
+
+    function account_balance(ctx::TradeContext; currency::Union{Currency.T, Nothing} = nothing)
+        params = isnothing(currency) ? Dict{String,Any}() : Dict{String,Any}("currency" => String(Symbol(currency)))
+        cmd = HttpGetCmd("/v1/asset/account", params, Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return [AccountBalance(Dict(b)) for b in resp.data.list]
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
+    end
+
+    function cash_flow(ctx::TradeContext; start_at::Date, end_at::Date, business_type::Union{Vector{BalanceType.T},Nothing} = nothing,
+        symbol::Union{String,Nothing} = nothing, page::Union{Int,Nothing} = nothing, size::Union{Int,Nothing} = nothing)
+        
+        options = GetCashFlowOptions(
+            start_time = Int(datetime2unix(DateTime(start_at))),
+            end_time = Int(datetime2unix(DateTime(end_at))),
+            business_type = business_type,
+            symbol = symbol,
+            page = page,
+            size = size,
+        )
+        cmd = HttpGetCmd("/v1/asset/cashflow", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return [CashFlow(f) for f in resp.data.list]
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
+    end
+
+    function fund_positions(ctx::TradeContext)
+        fund_positions(ctx, GetFundPositionsOptions())
+    end
+
+    function fund_positions(ctx::TradeContext, options::GetFundPositionsOptions)
+        cmd = HttpGetCmd("/v1/asset/fund", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return FundPositionsResponse(Dict(resp.data))
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
+    end
+
+    function stock_positions(ctx::TradeContext)
+        stock_positions(ctx, GetStockPositionsOptions())
+    end
+
+    function stock_positions(ctx::TradeContext, options::GetStockPositionsOptions)
+        cmd = HttpGetCmd("/v1/asset/stock", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return StockPositionsResponse(Dict(resp.data))
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
+    end
+
+    function margin_ratio(ctx::TradeContext, symbol::String)
+        params = Dict{String,Any}("symbol" => string(symbol))
+        cmd = HttpGetCmd("/v1/risk/margin-ratio", params, Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return MarginRatio(Dict(resp.data))
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
+    end
+
+    function order_detail(ctx::TradeContext, order_id::String)
+        params = Dict{String,Any}("order_id" => string(order_id))
+        cmd = HttpGetCmd("/v1/trade/order", params, Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return OrderDetail(Dict(resp.data))
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
+    end
+
+    function estimate_max_purchase_quantity(ctx::TradeContext, options::EstimateMaxPurchaseQuantityOptions)
+        cmd = HttpGetCmd("/v1/trade/estimate/buy_limit", to_dict(options), Channel(1))
+        resp = request(ctx, cmd)
+        if resp.code == 0
+            return EstimateMaxPurchaseQuantityResponse(Dict(resp.data))
+        else
+            throw(LongportException(resp.code, "", resp.message))
+        end
+    end
+end # module Trade
