@@ -8,8 +8,10 @@ module TradeProtocol
     using EnumX
     using Dates
     using JSON3
+    using Printf
     using ..QuoteProtocol: SecurityBoard
     using ..Constant
+    using ..Utils
 
     export Command, DispatchType, ContentType, Sub, SubResponse, SubResponseFail, Unsub, UnsubResponse, Notification, OrderType,
            OrderStatus, TopicType, Execution, OrderSide, OrderTag, TimeInForceType, TriggerStatus, OutsideRTH, Order, PushOrderChanged,
@@ -39,6 +41,7 @@ module TradeProtocol
 
     # --- Order Status Enum ---
     @enumx OrderStatus begin
+        Unknown = 0             # 未知
         NotReported             # 待提交
         ReplacedNotReported     # 待提交 (改单成功)
         ProtectedNotReported    # 待提交 (保价订单)
@@ -357,7 +360,7 @@ module TradeProtocol
     Trigger status
     """
     @enumx TriggerStatus begin
-        UnknownTrigger = 0
+        NOT_USED = 0
         Deactive = 1
         Active = 2
         Released = 3
@@ -450,8 +453,8 @@ module TradeProtocol
                 get(data, "trade_id", ""),
                 get(data, "symbol", ""),
                 DateTime(get(data, "trade_done_at", "1970-01-01T00:00:00Z")[1:19]),
-                get(data, "quantity", 0),
-                get(data, "price", 0.0)
+                safe_parse(Int64, get(data, "quantity", 0)),
+                safe_parse(Float64, get(data, "price", 0.0))
             )
         end
     end
@@ -487,37 +490,38 @@ module TradeProtocol
         outside_rth::OutsideRTH.T
         remark::String
 
-        function Order(data::Dict)
+        function Order(data::AbstractDict)
             new(
                 get(data, "order_id", ""),
-                OrderStatus.T(get(data, "status", 0)),
+                get(data, "status", "Unknown") |> s -> getproperty(OrderStatus, Symbol(replace(s, "Status" => ""))),
                 get(data, "stock_name", ""),
-                get(data, "quantity", 0),
-                get(data, "executed_quantity", 0),
-                get(data, "price", nothing),
-                get(data, "executed_price", nothing),
-                unix2datetime(get(data, "submitted_at", 0)),
-                OrderSide.T(get(data, "side", 0)),
+                safe_parse(Int64, get(data, "quantity", "0")),
+                safe_parse(Int64, get(data, "executed_quantity", "0")),
+                safe_parse(Float64, get(data, "price", nothing)),
+                safe_parse(Float64, get(data, "executed_price", nothing)),
+                unix2datetime(safe_parse(Int64, get(data, "submitted_at", "0"))),
+                get(data, "side", "UnknownSide") |> s -> getproperty(OrderSide, Symbol(s)),
                 get(data, "symbol", ""),
-                OrderType.T(get(data, "order_type", 0)),
-                get(data, "last_done", nothing),
-                get(data, "trigger_price", nothing),
+                get(data, "order_type", "UNKNOWN") |> s -> getproperty(OrderType, Symbol(s)),
+                safe_parse(Float64, get(data, "last_done", nothing)),
+                safe_parse(Float64, get(data, "trigger_price", nothing)),
                 get(data, "msg", ""),
-                OrderTag.T(get(data, "tag", 0)),
-                TimeInForceType.T(get(data, "time_in_force", 0)),
+                get(data, "tag", "UnknownTag") |> s -> getproperty(OrderTag, Symbol(s)),
+                get(data, "time_in_force", "UnknownTIF") |> s -> getproperty(TimeInForceType, Symbol(s)),
                 get(data, "expire_date", nothing) |> d -> isnothing(d) ? nothing : Date(d),
-                get(data, "updated_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(t),
-                get(data, "trigger_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(t),
-                get(data, "trailing_amount", nothing),
-                get(data, "trailing_percent", nothing),
-                get(data, "limit_offset", nothing),
-                TriggerStatus.T(get(data, "trigger_status", 0)),
+                get(data, "updated_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
+                get(data, "trigger_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
+                safe_parse(Float64, get(data, "trailing_amount", nothing)),
+                safe_parse(Float64, get(data, "trailing_percent", nothing)),
+                safe_parse(Float64, get(data, "limit_offset", nothing)),
+                get(data, "trigger_status", "NOT_USED") |> s -> getproperty(TriggerStatus, Symbol(s)),
                 get(data, "currency", ""),
-                OutsideRTH.T(get(data, "outside_rth", 0)),
+                get(data, "outside_rth", "RTH_ONLY") |> s -> getproperty(OutsideRTH, Symbol(s)),
                 get(data, "remark", "")
             )
         end
     end
+
 
     """
     Push order changed information
@@ -550,73 +554,32 @@ module TradeProtocol
         remark::String
 
         function PushOrderChanged(data::Dict)
-            side_str = get(data, "side", "Buy")
-            side = side_str == "Buy" ? Buy : Sell
-
-            stock_name = get(data, "stock_name", "")
-            submitted_quantity = haskey(data, "submitted_quantity") ? parse(Int64, data["submitted_quantity"]) : nothing
-            symbol = get(data, "symbol", "")
-
-            order_type_str = get(data, "order_type", "LO")
-            order_type = getfield(OrderType, Symbol(order_type_str))
-
-            submitted_price = haskey(data, "submitted_price") ? parse(Float64, data["submitted_price"]) : nothing
-            executed_quantity = haskey(data, "executed_quantity") ? parse(Int64, data["executed_quantity"]) : nothing
-            executed_price = haskey(data, "executed_price") ? parse(Float64, data["executed_price"]) : nothing
-            order_id = get(data, "order_id", "")
-            currency = get(data, "currency", "")
-
-            status_str = get(data, "status", "NewStatus")
-            status = getfield(OrderStatus, Symbol(status_str))
-
-            submitted_at = haskey(data, "submitted_at") ? unix2datetime(parse(Int64, data["submitted_at"])) : nothing
-            updated_at = haskey(data, "updated_at") ? unix2datetime(parse(Int64, data["updated_at"])) : nothing
-            trigger_price = haskey(data, "trigger_price") ? parse(Float64, data["trigger_price"]) : nothing
-            msg = get(data, "msg", "")
-
-            tag_str = get(data, "tag", "Normal")
-            tag_map = Dict("Normal" => Normal, "GTC" => LongTerm, "Grey" => Grey)
-            tag = get(tag_map, tag_str, Normal)
-
-            trigger_status_str = get(data, "trigger_status", "DEACTIVE")
-            trigger_status_map = Dict("NOT_USED" => Deactive, "DEACTIVE" => Deactive, "ACTIVE" => Active, "RELEASED" => Released)
-            trigger_status = get(trigger_status_map, trigger_status_str, Deactive)
-
-            trigger_at = haskey(data, "trigger_at") ? unix2datetime(parse(Int64, data["trigger_at"])) : nothing
-            trailing_amount = haskey(data, "trailing_amount") ? parse(Float64, data["trailing_amount"]) : nothing
-            trailing_percent = haskey(data, "trailing_percent") ? parse(Float64, data["trailing_percent"]) : nothing
-            limit_offset = haskey(data, "limit_offset") ? parse(Float64, data["limit_offset"]) : nothing
-            account_no = get(data, "account_no", "")
-            last_share = haskey(data, "last_share") ? parse(Int64, data["last_share"]) : nothing
-            last_price = haskey(data, "last_price") ? parse(Float64, data["last_price"]) : nothing
-            remark = get(data, "remark", "")
-
             new(
-                side,
-                stock_name,
-                submitted_quantity,
-                symbol,
-                order_type,
-                submitted_price,
-                executed_quantity,
-                executed_price,
-                order_id,
-                currency,
-                status,
-                submitted_at,
-                updated_at,
-                trigger_price,
-                msg,
-                tag,
-                trigger_status,
-                trigger_at,
-                trailing_amount,
-                trailing_percent,
-                limit_offset,
-                account_no,
-                last_share,
-                last_price,
-                remark
+                get(data, "side", "UnknownSide") |> s -> getproperty(OrderSide, Symbol(s)),
+                get(data, "stock_name", ""),
+                safe_parse(Int64, get(data, "submitted_quantity", nothing)),
+                get(data, "symbol", ""),
+                get(data, "order_type", "UNKNOWN") |> s -> getproperty(OrderType, Symbol(s)),
+                safe_parse(Float64, get(data, "submitted_price", nothing)),
+                safe_parse(Int64, get(data, "executed_quantity", nothing)),
+                safe_parse(Float64, get(data, "executed_price", nothing)),
+                get(data, "order_id", ""),
+                get(data, "currency", ""),
+                get(data, "status", "Unknown") |> s -> getproperty(OrderStatus, Symbol(replace(s, "Status" => ""))),
+                get(data, "submitted_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
+                get(data, "updated_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
+                safe_parse(Float64, get(data, "trigger_price", nothing)),
+                get(data, "msg", ""),
+                get(data, "tag", "UnknownTag") |> s -> getproperty(OrderTag, Symbol(s)),
+                get(data, "trigger_status", "UnknownTrigger") |> s -> getproperty(TriggerStatus, Symbol(s)),
+                get(data, "trigger_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
+                safe_parse(Float64, get(data, "trailing_amount", nothing)),
+                safe_parse(Float64, get(data, "trailing_percent", nothing)),
+                safe_parse(Float64, get(data, "limit_offset", nothing)),
+                get(data, "account_no", ""),
+                safe_parse(Int64, get(data, "last_share", nothing)),
+                safe_parse(Float64, get(data, "last_price", nothing)),
+                get(data, "remark", "")
             )
         end
     end
@@ -631,9 +594,9 @@ module TradeProtocol
 
         function MarginRatio(data::Dict)
             new(
-                parse(Float64, get(data, "im_factor", "0.0")),
-                parse(Float64, get(data, "mm_factor", "0.0")),
-                parse(Float64, get(data, "fm_factor", "0.0"))
+                safe_parse(Float64, get(data, "im_factor", "0.0")),
+                safe_parse(Float64, get(data, "mm_factor", "0.0")),
+                safe_parse(Float64, get(data, "fm_factor", "0.0"))
             )
         end
     end
@@ -650,6 +613,15 @@ module TradeProtocol
         name::String
         fee::Float64
         currency::String
+
+        function OrderChargeFee(data::Dict)
+            new(
+                get(data, "code", ""),
+                get(data, "name", ""),
+                get(data, "fee", 0.0),
+                get(data, "currency", "")
+            )
+        end
     end
 
     """
@@ -659,6 +631,14 @@ module TradeProtocol
         code::String
         name::String
         fees::Vector{OrderChargeFee}
+
+        function OrderChargeItem(data::Dict)
+            new(
+                get(data, "code", ""),
+                get(data, "name", ""),
+                [OrderChargeFee(Dict(f)) for f in get(data, "fees", [])]
+            )
+        end
     end
 
 
@@ -669,6 +649,14 @@ module TradeProtocol
         total_charges::Float64
         currency::String
         items::Vector{OrderChargeItem}
+
+        function OrderChargeDetail(data::Dict)
+            new(
+                get(data, "total_charges", 0.0),
+                get(data, "currency", ""),
+                [OrderChargeItem(Dict(i)) for i in get(data, "items", [])]
+            )
+        end
     end
 
     """
@@ -680,6 +668,16 @@ module TradeProtocol
         status::OrderStatus.T
         msg::String
         time::DateTime
+
+        function OrderHistoryDetail(data::Dict)
+            new(
+                get(data, "price", 0.0),
+                get(data, "quantity", 0),
+                OrderStatus.T(get(data, "status", 0)),
+                get(data, "msg", ""),
+                unix2datetime(get(data, "time", 0))
+            )
+        end
     end
 
     """
@@ -723,6 +721,48 @@ module TradeProtocol
         platform_deducted_currency::Union{String, Nothing}
         history::Vector{OrderHistoryDetail}
         charge_detail::OrderChargeDetail
+
+        function OrderDetail(data::Dict)
+            new(
+                get(data, "order_id", ""),
+                get(data, "status", "Unknown") |> s -> getproperty(OrderStatus, Symbol(replace(s, "Status" => ""))),
+                get(data, "stock_name", ""),
+                safe_parse(Int64, get(data, "quantity", "0")),
+                safe_parse(Int64, get(data, "executed_quantity", "0")),
+                safe_parse(Float64, get(data, "price", nothing)),
+                safe_parse(Float64, get(data, "executed_price", nothing)),
+                unix2datetime(safe_parse(Int64, get(data, "submitted_at", "0"))),
+                get(data, "side", "UnknownSide") |> s -> getproperty(OrderSide, Symbol(s)),
+                get(data, "symbol", ""),
+                get(data, "order_type", "UNKNOWN") |> s -> getproperty(OrderType, Symbol(s)),
+                safe_parse(Float64, get(data, "last_done", nothing)),
+                safe_parse(Float64, get(data, "trigger_price", nothing)),
+                get(data, "msg", ""),
+                get(data, "tag", "UnknownTag") |> s -> getproperty(OrderTag, Symbol(s)),
+                get(data, "time_in_force", "UnknownTIF") |> s -> getproperty(TimeInForceType, Symbol(s)),
+                get(data, "expire_date", nothing) |> d -> isnothing(d) ? nothing : Date(d),
+                get(data, "updated_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
+                get(data, "trigger_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
+                safe_parse(Float64, get(data, "trailing_amount", nothing)),
+                safe_parse(Float64, get(data, "trailing_percent", nothing)),
+                safe_parse(Float64, get(data, "limit_offset", nothing)),
+                get(data, "trigger_status", "UnknownTrigger") |> s -> getproperty(TriggerStatus, Symbol(s)),
+                get(data, "currency", ""),
+                get(data, "outside_rth", "RTH_ONLY") |> s -> getproperty(OutsideRTH, Symbol(s)),
+                get(data, "remark", ""),
+                get(data, "free_status", "UnknownCommission") |> s -> getproperty(CommissionFreeStatus, Symbol(s)),
+                safe_parse(Float64, get(data, "free_amount", nothing)),
+                get(data, "free_currency", nothing),
+                get(data, "deductions_status", "UnknownDeduction") |> s -> getproperty(DeductionStatus, Symbol(s)),
+                safe_parse(Float64, get(data, "deductions_amount", nothing)),
+                get(data, "deductions_currency", nothing),
+                get(data, "platform_deducted_status", "UnknownDeduction") |> s -> getproperty(DeductionStatus, Symbol(s)),
+                safe_parse(Float64, get(data, "platform_deducted_amount", nothing)),
+                get(data, "platform_deducted_currency", nothing),
+                [OrderHistoryDetail(Dict(h)) for h in get(data, "history", [])],
+                OrderChargeDetail(Dict(get(data, "charge_detail", Dict())))
+            )
+        end
     end
 
     """
@@ -960,12 +1000,12 @@ module TradeProtocol
             new(
                 get(data, "symbol", ""),
                 get(data, "symbol_name", ""),
-                get(data, "quantity", 0.0),
-                get(data, "available_quantity", 0.0),
+                safe_parse(Float64, get(data, "quantity", 0.0)),
+                safe_parse(Float64, get(data, "available_quantity", 0.0)),
                 get(data, "currency", ""),
-                get(data, "cost_price", 0.0),
+                safe_parse(Float64, get(data, "cost_price", 0.0)),
                 get(data, "market", ""),
-                get(data, "init_quantity", nothing)
+                safe_parse(Float64, get(data, "init_quantity", nothing))
             )
         end
     end

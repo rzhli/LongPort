@@ -4,12 +4,12 @@ module LongPort
     # Core Modules
     include("Core/Constant.jl")
     include("Core/Errors.jl")
+    include("Core/Utils.jl")
+    include("Core/Cache.jl")
     include("Core/ControlProtocol.jl")
     include("Core/QuoteProtocol.jl")
     include("Core/TradeProtocol.jl")
     include("Config.jl")
-    include("Core/Utils.jl")
-    include("Core/Cache.jl")
     include("Client.jl")
 
     include("Quote/QuotePush.jl")

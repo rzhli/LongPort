@@ -222,43 +222,16 @@ ctx = TradeContext(cfg)
 
 ## 成交
 ### 获取历史成交明细
-resp = history_executions(ctx)
-resp = history_executions(ctx, GetHistoryExecutionsOptions(symbol = "700.HK", start_at = Date(2024, 5, 9), end_at = Date(2025, 5, 12)))
+resp = history_executions(ctx; symbol = "700.HK", start_at = Date(2024, 5, 9), end_at = Date(2025, 5, 12))
 
 ### 获取当日成交明细
-resp = today_executions(ctx)
-resp = today_executions(ctx, GetTodayExecutionsOptions(symbol = "700.HK"))
+resp = today_executions(ctx; symbol = "700.HK")
 
 ## 订单
 ### 预估最大购买数量
 resp = estimate_max_purchase_quantity(ctx, EstimateMaxPurchaseQuantityOptions(symbol = "700.HK", order_type = OrderType.LO, side = OrderSide.Buy))
 
-### 获取历史订单
-resp = history_orders(ctx)
-resp = history_orders(
-    ctx, GetHistoryOrdersOptions(
-        symbol = "700.HK",
-        status = [OrderStatus.Filled, OrderStatus.New],
-        side = OrderSide.Buy,
-        start_at = Date(2024, 5, 9),
-        end_at = Date(2025, 5, 12)
-    )
-)
-
-### 订单详情
-resp = order_detail(ctx, "701276261045858304")
-
-### 修改订单
-resp = replace_order(
-    ctx, ReplaceOrderOptions(
-        order_id = "709043056541253632", 
-        submitted_quantity = 100, 
-        submitted_price = 50.0
-    )
-)
-
 ### 委托下单,用于港美股，窝轮，期权的委托下单
-
 # 限价单：  
 resp = submit_order(
     ctx, SubmitOrderOptions(
@@ -311,18 +284,41 @@ resp = submit_order(
     )
 )
 
-### 获取当日订单
-resp = today_orders(ctx)
-resp = today_orders(
-    ctx, GetTodayOrdersOptions(
-        symbol = "700.HK",
-        status = [OrderStatus.Filled, OrderStatus.New],
-        side = OrderSide.Buy
+### 修改订单
+resp = replace_order(
+    ctx, ReplaceOrderOptions(
+        order_id = "709043056541253632", 
+        submitted_quantity = 100, 
+        submitted_price = 50.0
     )
 )
 
 ### 撤销订单
-resp = cancel_order(ctx, "1138677953136173056")
+resp = cancel_order(ctx, "1138669808980606976")
+
+### 获取当日订单
+# 指定股票
+resp = today_orders(
+    ctx; symbol = "700.HK",
+    status = [OrderStatus.Filled, OrderStatus.New, OrderStatus.Rejected],
+    side = OrderSide.Buy
+)
+# 不指定股票
+resp = today_orders(ctx)
+
+### 获取历史订单
+# 指定股票
+resp = history_orders(
+    ctx; symbol = "700.HK",
+    status = [OrderStatus.Filled, OrderStatus.New, OrderStatus.Rejected],
+    side = OrderSide.Buy, start_at = Date(2024, 5, 9), end_at = Date(2025, 10, 12)
+)
+# 不指定股票
+resp = history_orders(ctx)
+
+### 订单详情
+resp = order_detail(ctx, "701276261045858304")
+
 
 ## 交易推送
 function on_order_changed(order_changed)
@@ -355,4 +351,3 @@ resp = stock_positions(ctx)
 
 ### 获取保证金比例, 用于获取股票初始保证金比例、维持保证金比例、强平保证金比例
 resp = margin_ratio(ctx, "700.HK")
-

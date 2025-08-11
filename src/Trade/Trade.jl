@@ -1,6 +1,6 @@
 module Trade
 
-    using JSON3, Dates, Logging 
+    using JSON3, Dates, Logging, DataFrames
     import ProtoBuf as PB
 
     using ..Constant
@@ -9,6 +9,7 @@ module Trade
     using ..Errors
     using ..TradePush
     using ..TradeProtocol
+    using ..Utils
 
     # --- Public API ---
     export TradeContext, disconnect!, subscribe, unsubscribe, history_executions, today_executions,
@@ -227,11 +228,13 @@ module Trade
         request(ctx, cmd)
     end
 
-    function history_executions(ctx::TradeContext)
-        history_executions(ctx, GetHistoryExecutionsOptions())
-    end
-
-    function history_executions(ctx::TradeContext, options::GetHistoryExecutionsOptions)
+    function history_executions(
+        ctx::TradeContext;
+        symbol::Union{String,Nothing}=nothing,
+        start_at::Union{Date,Nothing}=nothing,
+        end_at::Union{Date,Nothing}=nothing,
+    )
+        options = GetHistoryExecutionsOptions(symbol=symbol, start_at=start_at, end_at=end_at)
         cmd = HttpGetCmd("/v1/trade/execution/history", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
@@ -241,11 +244,8 @@ module Trade
         end
     end
 
-    function today_executions(ctx::TradeContext)
-        today_executions(ctx, GetTodayExecutionsOptions())
-    end
-
-    function today_executions(ctx::TradeContext, options::GetTodayExecutionsOptions)
+    function today_executions(ctx::TradeContext; symbol::Union{String,Nothing}=nothing)
+        options = GetTodayExecutionsOptions(symbol=symbol)
         cmd = HttpGetCmd("/v1/trade/execution/today", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
@@ -255,29 +255,61 @@ module Trade
         end
     end
 
-    function history_orders(ctx::TradeContext)
-        history_orders(ctx, GetHistoryOrdersOptions())
-    end
-
-    function history_orders(ctx::TradeContext, options::GetHistoryOrdersOptions)
+    function history_orders(
+        ctx::TradeContext;
+        symbol::Union{String,Nothing}=nothing,
+        status::Union{Vector{OrderStatus.T},Nothing}=nothing,
+        side::Union{OrderSide.T,Nothing}=nothing,
+        start_at::Union{Date,Nothing}=nothing,
+        end_at::Union{Date,Nothing}=nothing,
+    )
+        options = GetHistoryOrdersOptions(symbol=symbol, status=status, side=side, start_at=start_at, end_at=end_at)
         cmd = HttpGetCmd("/v1/trade/order/history", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return [Order(Dict(o)) for o in resp.data.orders]
+            orders = [Order(o) for o in resp.data["orders"]]
+            df = to_dataframe(orders)
+            sub_df = df[!, [:order_id, :symbol, :side, :status, :order_type, :quantity, :price, :submitted_at]]
+            rename!(sub_df,
+                :order_id => "Order ID",
+                :symbol => "Symbol",
+                :side => "Side",
+                :status => "Status",
+                :order_type => "Type",
+                :quantity => "Quantity",
+                :price => "Price",
+                :submitted_at => "Submitted At",
+            )
+            return sub_df
         else
             throw(LongportException(resp.code, "", resp.message))
         end
     end
 
-    function today_orders(ctx::TradeContext)
-        today_orders(ctx, GetTodayOrdersOptions())
-    end
-
-    function today_orders(ctx::TradeContext, options::GetTodayOrdersOptions)
+    function today_orders(
+        ctx::TradeContext;
+        symbol::Union{String,Nothing}=nothing,
+        status::Union{Vector{OrderStatus.T},Nothing}=nothing,
+        side::Union{OrderSide.T,Nothing}=nothing,
+    )
+        options = GetTodayOrdersOptions(symbol=symbol, status=status, side=side)
         cmd = HttpGetCmd("/v1/trade/order/today", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return [Order(Dict(o)) for o in resp.data.orders]
+            orders = [Order(o) for o in resp.data["orders"]]
+            df = to_dataframe(orders)
+            sub_df = df[!, [:order_id, :symbol, :side, :status, :order_type, :quantity, :price, :submitted_at]]
+            rename!(sub_df,
+                :order_id => "Order ID",
+                :symbol => "Symbol",
+                :side => "Side",
+                :status => "Status",
+                :order_type => "Order Type",
+                :quantity => "Quantity",
+                :price => "Price",
+                :submitted_at => "Submitted At",
+            )
+            return sub_df
         else
             throw(LongportException(resp.code, "", resp.message))
         end
@@ -317,7 +349,7 @@ module Trade
         cmd = HttpGetCmd("/v1/asset/account", params, Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return [AccountBalance(Dict(b)) for b in resp.data.list]
+            return [AccountBalance(Dict(b)) for b in resp.data["list"]]
         else
             throw(LongportException(resp.code, "", resp.message))
         end
@@ -337,17 +369,14 @@ module Trade
         cmd = HttpGetCmd("/v1/asset/cashflow", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return [CashFlow(f) for f in resp.data.list]
+            return [CashFlow(Dict(f)) for f in resp.data.list]
         else
             throw(LongportException(resp.code, "", resp.message))
         end
     end
 
-    function fund_positions(ctx::TradeContext)
-        fund_positions(ctx, GetFundPositionsOptions())
-    end
-
-    function fund_positions(ctx::TradeContext, options::GetFundPositionsOptions)
+    function fund_positions(ctx::TradeContext; symbol::Union{Vector{String},Nothing}=nothing)
+        options = GetFundPositionsOptions(symbol=symbol)
         cmd = HttpGetCmd("/v1/asset/fund", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
@@ -357,11 +386,8 @@ module Trade
         end
     end
 
-    function stock_positions(ctx::TradeContext)
-        stock_positions(ctx, GetStockPositionsOptions())
-    end
-
-    function stock_positions(ctx::TradeContext, options::GetStockPositionsOptions)
+    function stock_positions(ctx::TradeContext; symbol::Union{String,Nothing}=nothing)
+        options = GetStockPositionsOptions(symbol=symbol)
         cmd = HttpGetCmd("/v1/asset/stock", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
