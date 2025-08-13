@@ -162,8 +162,9 @@ Quote.unsubscribe(ctx, ["GOOGL.US"], [SubType.QUOTE, SubType.DEPTH])
 
 ### Context Management
 - `Config.from_toml()`: Load configuration from `config.toml` file
-- `try_new(config)`: Create and connect to `QuoteContext`
-- `disconnect!(ctx)`: Disconnect from the server
+- `QuoteContext(config)`: Create and connect to `QuoteContext`
+- `TradeContext(config)`: Create and connect to `TradeContext`
+- `disconnect!(ctx)`: Disconnect from the server (need Quote./Trade. as prefix)
 
 ### Quote Fetching
 - `static_info(ctx, symbols)`: Get basic static information for securities

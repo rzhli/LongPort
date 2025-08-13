@@ -111,7 +111,7 @@ end
 # 获取 700.HK 的盘中 K 线
 candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.SIXTY_MINUTE, 365; adjust_type = AdjustType.NO_ADJUST)
 # 获取 700.HK 的所有 K 线  （TradeSession.All数字代码未知）
-candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.DAY, 100; trade_sessions = TradeSession.All)
+candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.DAY, 1000; trade_sessions = TradeSession.All)
 candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.DAY, 100; trade_sessions = TradeSession.Intraday)
 
 ### 当前市场温度
