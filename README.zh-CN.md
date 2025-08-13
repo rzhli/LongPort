@@ -162,7 +162,8 @@ Quote.unsubscribe(ctx, ["GOOGL.US"], [SubType.QUOTE, SubType.DEPTH])
 
 ### 上下文管理
 - `Config.from_toml()`: 从 `config.toml` 文件加载配置
-- `try_new(config)`: 创建并连接 `QuoteContext`
+- `QuoteContext(config)`: 创建并连接 `QuoteContext`
+- `TradeContext(config)`: 创建并连接 `TradeContext`
 - `disconnect!(ctx)`: 断开与服务器的连接
 
 ### 行情拉取
