@@ -3,6 +3,9 @@
 # Julia SDK for LongPort API
 非官方，目前仅自用，交易（Trade）模块某些函数暂未测试，欢迎提issue
 
+## 更新日志
+详细更新说明请见 [NEWS.md](NEWS.md)。
+
 参考文档：
 
 1. [官方文档](https://open.longportapp.com/zh-CN/docs)

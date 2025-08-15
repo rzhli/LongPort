@@ -1,6 +1,6 @@
 module Quote
 
-using ProtoBuf, JSON3, Dates, Logging, DataFrames
+using ProtoBuf, JSON3, Dates, Logging, DataFrames, HTTP
 using ..Config, ..QuotePush, ..Client, ..QuoteProtocol, ..ControlProtocol, ..Constant
 
 using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCommand, Direction,
@@ -21,17 +21,9 @@ using ..QuoteProtocol: CandlePeriod, AdjustType, TradeSession, SubType, QuoteCom
         
 using ..Client: WSClient
 using ..Cache: SimpleCache, CacheWithKey, get_or_update
-using ..Utils: to_namedtuple, to_china_time
+using ..Utils: to_namedtuple, to_china_time, Arc
 
-import ..Errors:LongportException
-
-# A simple wrapper to mimic Rust's Arc for shared ownership semantics
-struct Arc{T}
-    value::T
-end
-
-Base.getproperty(arc::Arc, sym::Symbol) = getproperty(getfield(arc, :value), sym)
-Base.setproperty!(arc::Arc, sym::Symbol, x) = setproperty!(getfield(arc, :value), sym, x)
+using ..Errors
 
 export QuoteContext, 
        disconnect!, realtime_quote, subscribe, unsubscribe, static_info, depth, intraday,
@@ -94,6 +86,7 @@ mutable struct InnerQuoteContext
     core_task::Union{Task, Nothing}
     push_dispatcher_task::Union{Task, Nothing}
     callbacks::QuotePush.Callbacks
+    subscriptions::Set{Tuple{Vector{String}, Vector{SubType.T}}}
 
     # Caches
     cache_participants::SimpleCache{Vector{Any}}
@@ -134,6 +127,20 @@ function core_run(inner::InnerQuoteContext, push_tx::Channel)
                 inner.session_id = ws.session_id # Save session_id
                 # @info "Quote WebSocket connected."
                 reconnect_attempts = 0 # Reset on successful connection
+
+                # Resubscribe to all topics after successful reconnection
+                if !isempty(inner.subscriptions)
+                    @info "Resubscribing to topics..."
+                    for (symbols, sub_types) in inner.subscriptions
+                        try
+                            req = QuoteSubscribeRequest(symbols, sub_types, true)
+                            cmd = GenericRequestCmd(QuoteCommand.Subscribe, req, QuoteSubscribeResponse, Channel(1))
+                            handle_command(inner, cmd) # Directly handle, don't wait on channel
+                        catch e
+                            @error "Failed to resubscribe" symbols=symbols sub_types=sub_types exception=(e, catch_backtrace())
+                        end
+                    end
+                end
             end
 
             # TODO: Fetch member_id and quote_level after connection
@@ -157,23 +164,7 @@ function core_run(inner::InnerQuoteContext, push_tx::Channel)
                 @warn "Connection lost, attempting to reconnect..." exception=(e, catch_backtrace())
                 
                 # Attempt fast reconnect first
-                if !isnothing(inner.ws_client) && Client.reconnect!(inner.ws_client)
-                    @info "Fast reconnect successful."
-                    reconnect_attempts = 0
-                    continue # Skip the full reconnect logic and go to next command loop
-                end
-
-                # Fallback to full reconnect with backoff
-                reconnect_attempts += 1
-                delay = min(60.0, 2.0^reconnect_attempts) # Exponential backoff with max delay
-                @warn "Fast reconnect failed, attempting full reconnect in $(delay)s..."
-                
-                # Cleanup before full reconnect
-                if !isnothing(inner.ws_client)
-                    Client.disconnect!(inner.ws_client)
-                    inner.ws_client = nothing
-                end
-                sleep(delay)
+                Client.full_reconnect!(inner.ws_client)
 
             else
                 @error "Quote core actor failed with an unhandled exception" exception=(e, catch_backtrace())
@@ -200,7 +191,7 @@ function handle_command(inner::InnerQuoteContext, cmd::AbstractCommand)
         elseif cmd isa GenericRequestCmd
             # Handle Protobuf requests over WebSocket
             if isnothing(inner.ws_client) || !inner.ws_client.connected
-                throw(LongportException("WebSocket not connected"))
+                @lperror(404, "WebSocket not connected")
             end
             
             local req_body::Vector{UInt8}
@@ -307,6 +298,7 @@ function QuoteContext(config::Config.config)
         nothing, # core_task
         nothing, # push_dispatcher_task
         QuotePush.Callbacks(),
+        Set{Tuple{Vector{String}, Vector{SubType.T}}}(),
         # Caches
         SimpleCache{Vector{Any}}(1800.0),
         SimpleCache{Vector{Any}}(1800.0),
@@ -348,12 +340,20 @@ end
 function request(ctx::QuoteContext, cmd::AbstractCommand)
     put!(ctx.inner.command_ch, cmd)
     resp = take!(cmd.resp_ch)
+
     if resp isa Exception
         throw(resp)
     end
+
+    # 如果是 HTTP.Response，则读取 body 再解析 JSON
+    if resp isa HTTP.Messages.Response
+        return JSON3.read(String(resp.body))
+    end
+
     if resp isa String
         return JSON3.read(resp)
     end
+    
     return resp
 end
 
@@ -374,6 +374,7 @@ function subscribe(ctx::QuoteContext, symbols::Vector{String}, sub_types::Vector
     req = QuoteSubscribeRequest(symbols, sub_types, is_first_push)
     cmd = GenericRequestCmd(QuoteCommand.Subscribe, req, QuoteSubscribeResponse, Channel(1))
     request(ctx, cmd)
+    push!(ctx.inner.subscriptions, (symbols, sub_types))
     return [(symbol = s, sub_types = sub_types) for s in symbols]
 end
 
@@ -381,7 +382,7 @@ function unsubscribe(ctx::QuoteContext, symbols::Vector{String}, sub_types::Vect
     req = QuoteUnsubscribeRequest(symbols, sub_types, false)
     cmd = GenericRequestCmd(QuoteCommand.Unsubscribe, req, QuoteUnsubscribeResponse, Channel(1))
     request(ctx, cmd)
-
+    delete!(ctx.inner.subscriptions, (symbols, sub_types))
     return [(symbol = s, sub_types = sub_types) for s in symbols]
 end
 
@@ -635,13 +636,13 @@ end
 
 function trading_session(ctx::QuoteContext)
     """Get trading session of the day"""
-    return get_or_update(ctx.inner.cache_trading_sessions) do
+    return get_or_update(ctx.inner.cache_trading_sessions, function ()
         req = Vector{UInt8}()
         cmd = GenericRequestCmd(QuoteCommand.QueryMarketTradePeriod, req, MarketTradePeriodResponse, Channel(1))
         resp = request(ctx, cmd)
 
         format_time(t::Int64) = lpad(string(t), 4, '0') |> s -> "$(s[1:2]):$(s[3:4])"
-        
+
         rows = []
         for market_session in to_namedtuple(resp.market_trade_session)
             for session in market_session.trade_session
@@ -654,7 +655,7 @@ function trading_session(ctx::QuoteContext)
             end
         end
         DataFrame(rows)
-    end
+    end)
 end
 
 function trading_days(ctx::QuoteContext, market::Market.T, start_date::Date, end_date::Date)
@@ -741,13 +742,13 @@ function market_temperature(ctx::QuoteContext, market::Market.T)
     """Get market temperature"""
     cmd = HttpGetCmd("/v1/quote/market_temperature", Dict{String, Any}("market" => string(market)), Channel(1))
     res = request(ctx, cmd)
-    
+
     temp_response = MarketTemperatureResponse(
-        get(res.data, :temperature, nothing),
-        get(res.data, :description, ""),
-        get(res.data, :valuation, nothing),
-        get(res.data, :sentiment, nothing),
-        to_china_time(get(res.data, :updated_at, "0"))
+        res.data.temperature,
+        res.data.description,
+        res.data.valuation,
+        res.data.sentiment,
+        to_china_time(res.data.updated_at)
     )
     
     return to_namedtuple(temp_response)

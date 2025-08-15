@@ -1,40 +1,35 @@
 module Errors
 
-using JSON3
+    using JSON3, HTTP
 
-export LongportException, ApiResponse
+    export LongPortError, @lperror, ApiResponse
 
-struct ApiResponse{T}
-    code::Int
-    message::String
-    data::T
+    struct ApiResponse{T}
+        code::Int
+        message::String
+        data::T
+        headers::Dict{String, String}
 
-    function ApiResponse(body::AbstractString)
-        json = JSON3.read(body)
-        new{typeof(json.data)}(json.code, json.message, json.data)
-    end
+function ApiResponse(resp::HTTP.Response)
+    json = JSON3.read(resp.body)
+    headers = Dict(resp.headers)
+    data = get(json, :data, nothing)
+    new{typeof(data)}(json.code, json.message, data, headers)
 end
+    end
 
-struct LongportException <: Exception
-    code::Union{Int, Nothing}
-    trace_id::Union{String, Nothing}
-    message::String
-    
-    function LongportException(code::Union{Int, Nothing}, trace_id::Union{String, Nothing}, message::String)
-        new(code, trace_id, message)
+    struct LongPortError <: Exception
+        code::Int
+        message::String
+        request_id::Union{Nothing,String}
+        payload::Any
     end
-    
-    function LongportException(message::String)
-        new(nothing, nothing, message)
-    end
-end
 
-function Base.show(io::IO, e::LongportException)
-    if !isnothing(e.code)
-        print(io, "LongportException: (code=$(e.code), trace_id=$(e.trace_id)) $(e.message)")
-    else
-        print(io, "LongportException: $(e.message)")
+    Base.showerror(io::IO, e::LongPortError) = print(io,
+        "LongPortError(code=$(e.code), message=$(e.message), request_id=$(e.request_id))")
+
+    macro lperror(code, message, request_id=nothing, payload=nothing)
+        :(throw(LongPortError($(esc(code)), $(esc(message)), $(esc(request_id)), $(esc(payload)))))
     end
-end
 
 end # module Errors

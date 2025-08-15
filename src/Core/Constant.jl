@@ -32,15 +32,15 @@ module Constant
 
     # --- Currency Enum ---
     @enumx Currency begin
-        HKD
-        USD
-        CNH
+        HKD = 0
+        USD = 1
+        CNH = 2
     end
 
     # --- Push Modes ---
     @enumx PushCandlestickMode begin
-        Realtime  # 实时模式
-        Confirmed # 确认模式
+        Realtime = 0  # 实时模式
+        Confirmed = 1 # 确认模式
     end
     
     # --- Market Enum ---

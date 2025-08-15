@@ -3,10 +3,10 @@ LongPort Julia SDK - Test Script
 (Tests functions individually using the new Actor-based API)
 """
 
-using LongPort, Dates
+using LongPort, Dates, Revise
 
 # Load config from TOML file
-cfg = from_toml()
+cfg = Config.from_toml()
 
 # 行情
 
@@ -29,7 +29,7 @@ resp = warrant_quote(ctx, ["14993.HK", "66642.HK"])
 ### 获取标的盘口    （DataFrame）
 depth_df = depth(ctx, "700.HK")
 
-### 获取标的经纪队列 （返回空值, 盘中再测试）
+### 获取标的经纪队列 （返回空值）
 resp = brokers(ctx, "700.HK")
 
 ### 获取券商席位 ID   （DataFrame）
@@ -42,7 +42,13 @@ resp = trades(ctx, "700.HK", 500)
 resp = intraday(ctx, "700.HK")
 
 # 获取标的历史K线（DataFrame格式）
-using Dates
+#=
+@enumx AdjustType begin
+    NO_ADJUST = 0
+    FORWARD_ADJUST = 1
+end
+=#
+
 # after 2023-01-01
 history_offset_data = history_candlesticks_by_offset(
     ctx, "700.HK", CandlePeriod.DAY, AdjustType.NO_ADJUST, Direction.FORWARD, 10; date=DateTime(2023, 1, 1)
@@ -74,7 +80,7 @@ resp = trading_session(ctx)
 ### 获取市场交易日  （DataFrame）
 resp = trading_days(ctx, Market.CN, Date(2025, 8, 1), Date(2025, 8, 30))
 
-### 获取标的当日资金流向  (DataFrame)
+### 获取标的当日资金流向(1分钟)  (DataFrame)
 resp = capital_flow(ctx, "700.HK")
 
 ### 获取标的当日资金分布  (DataFrame)
@@ -111,14 +117,14 @@ end
 # 获取 700.HK 的盘中 K 线
 candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.SIXTY_MINUTE, 365; adjust_type = AdjustType.NO_ADJUST)
 # 获取 700.HK 的所有 K 线  （TradeSession.All数字代码未知）
-candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.DAY, 1000; trade_sessions = TradeSession.All)
+candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.DAY, 1000; adjust_type = AdjustType.FORWARD_ADJUST, trade_sessions = TradeSession.All)
 candlesticks_data = candlesticks(ctx, "700.HK", CandlePeriod.DAY, 100; trade_sessions = TradeSession.Intraday)
 
 ### 当前市场温度
 resp = market_temperature(ctx, Market.CN)
 
 ### 获取历史市场温度（只有日数据，没有周，月数据）
-type, list = history_market_temperature(ctx, Market.US, Date(2024, 1, 1), Date(2025, 2, 1))
+type, list = history_market_temperature(ctx, Market.CN, Date(2025, 1, 1), Date(2025, 8, 1))
 
 
 # 订阅
@@ -202,7 +208,7 @@ message = delete_watchlist_group(ctx, 3615635, true)
 ### 更新自选股
 update_watchlist_group(ctx, 10086, name = "WatchList2", securities = ["700.HK", "AAPL.US"], mode = SecuritiesUpdateMode.Add)
 
-### 获取标的列表（只有中文名称name_cn）
+### 获取标的列表（美股，只有中文名称name_cn）
 resp = security_list(ctx, Market.US, SecurityListCategory.Overnight)
 
 Quote.disconnect!(ctx)
@@ -215,7 +221,7 @@ Quote.disconnect!(ctx)
 using LongPort, Dates
 
 # Load config from TOML file
-cfg = from_toml()
+cfg = Config.from_toml()
 
 # Create and connect the TradeContext
 ctx = TradeContext(cfg)
@@ -294,13 +300,13 @@ resp = replace_order(
 )
 
 ### 撤销订单
-resp = cancel_order(ctx, "1138669808980606976")
+resp = cancel_order(ctx, "1140966101446840320")
 
 ### 获取当日订单
 # 指定股票
 resp = today_orders(
     ctx; symbol = "700.HK",
-    status = [OrderStatus.Filled, OrderStatus.New, OrderStatus.Rejected],
+    status = [OrderStatus.FilledStatus, OrderStatus.NewStatus, OrderStatus.RejectedStatus],
     side = OrderSide.Buy
 )
 # 不指定股票
@@ -310,14 +316,14 @@ resp = today_orders(ctx)
 # 指定股票
 resp = history_orders(
     ctx; symbol = "700.HK",
-    status = [OrderStatus.Filled, OrderStatus.New, OrderStatus.Rejected],
+    status = [OrderStatus.FilledStatus, OrderStatus.NewStatus, OrderStatus.RejectedStatus],
     side = OrderSide.Buy, start_at = Date(2024, 5, 9), end_at = Date(2025, 10, 12)
 )
 # 不指定股票
 resp = history_orders(ctx)
 
 ### 订单详情
-resp = order_detail(ctx, "701276261045858304")
+resp = order_detail(ctx, "1138677649372094464")
 
 
 ## 交易推送

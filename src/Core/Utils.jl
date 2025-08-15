@@ -1,8 +1,16 @@
 module Utils
 
-    using Logging, Dates, JSON3, DataFrames
+    using Logging, Dates, JSON3, DataFrames, EnumX
 
-    export to_namedtuple, to_china_time, to_dataframe, safe_parse
+    export to_namedtuple, to_china_time, to_dataframe, safeparse, Arc
+
+    # A simple wrapper to mimic Rust's Arc for shared ownership semantics
+    struct Arc{T}
+        value::T
+    end
+
+    Base.getproperty(arc::Arc, sym::Symbol) = getproperty(getfield(arc, :value), sym)
+    Base.setproperty!(arc::Arc, sym::Symbol, x) = setproperty!(getfield(arc, :value), sym, x)
 
     # Utility function to convert UTC timestamp to China time (UTC+8)
     function to_china_time(timestamp::Int64)
@@ -77,21 +85,37 @@ module Utils
         end
     end
 
-    function safe_parse(T, val)
-        isnothing(val) && return nothing
-        val isa T && return val
-        if val isa String
-            isempty(val) && return nothing
-            try
-                return parse(T, val)
-            catch
-                return nothing
+    function safeparse(::Type{T}, val) where {T}
+        # 空值处理
+        if val === "" || val === nothing
+            return T <: EnumX.Enum ? T(0) : zero(T)
+        end
+
+        # 已经是目标类型
+        if val isa T
+            return val
+        end
+
+        # 枚举类型（EnumX）直接用构造器解析
+        if T <: EnumX.Enum
+            sval = String(val)
+            for e in instances(T)  # 枚举所有成员
+                ename = string(e)
+                if ename == sval
+                    return e
+                end
             end
+            num = parse(Int, val)
+            return T(num)
         end
-        if val isa Number && T isa Number
-            return convert(T, val)
+
+        # 数字类型
+        if T <: Real
+            return parse(T, val)
         end
-        return nothing
+
+        # 不支持的类型
+        error("safeparse: unsupported type $T")
     end
 
 end

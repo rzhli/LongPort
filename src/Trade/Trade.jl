@@ -1,6 +1,6 @@
 module Trade
 
-    using JSON3, Dates, Logging, DataFrames
+    using JSON3, Dates, Logging, DataFrames, StructTypes
     import ProtoBuf as PB
 
     using ..Constant
@@ -9,7 +9,7 @@ module Trade
     using ..Errors
     using ..TradePush
     using ..TradeProtocol
-    using ..Utils
+    using ..Utils: Arc, to_china_time, safeparse
 
     # --- Public API ---
     export TradeContext, disconnect!, subscribe, unsubscribe, history_executions, today_executions,
@@ -18,11 +18,6 @@ module Trade
            set_on_order_changed
     
     # --- Core Actor Implementation ---
-    struct Arc{T}
-        value::T
-    end
-
-    Base.getproperty(arc::Arc, sym::Symbol) = getproperty(getfield(arc, :value), sym)
 
     abstract type AbstractCommand end
 
@@ -62,13 +57,14 @@ module Trade
 
     struct DisconnectCmd <: AbstractCommand end
 
-    mutable struct InnerTradeContext
-        config::Config.config
-        ws_client::Union{Client.WSClient,Nothing}
-        command_ch::Channel{Any}
-        core_task::Union{Task,Nothing}
-        callbacks::Callbacks
-    end
+mutable struct InnerTradeContext
+    config::Config.config
+    ws_client::Union{Client.WSClient,Nothing}
+    command_ch::Channel{Any}
+    core_task::Union{Task,Nothing}
+    callbacks::Callbacks
+    subscriptions::Set{String}
+end
 
     struct TradeContext
         inner::Arc{InnerTradeContext}
@@ -96,6 +92,20 @@ module Trade
                 Client.connect!(ws)
                 reconnect_attempts = 0
 
+                # Resubscribe to all topics after successful reconnection
+                if !isempty(inner.subscriptions)
+                    @info "Resubscribing to trade topics..."
+                    try
+                        req = TradeProtocol.Sub(collect(inner.subscriptions))
+                        io_buf = IOBuffer()
+                        encoder = PB.ProtoEncoder(io_buf)
+                        PB.encode(encoder, req)
+                        Client.ws_request(inner.ws_client, UInt8(TradeProtocol.Command.CMD_SUB), take!(io_buf))
+                    catch e
+                        @error "Failed to resubscribe to trade topics" exception=(e, catch_backtrace())
+                    end
+                end
+
                 while isopen(inner.command_ch)
                     cmd = take!(inner.command_ch)
                     handle_command(inner, cmd)
@@ -108,11 +118,7 @@ module Trade
                 if e isa InvalidStateException && e.state == :closed
                     should_run = false
                 elseif e isa LongportError && e.code == "ws-disconnected"
-                    reconnect_attempts += 1
-                    delay = min(60.0, 2.0^reconnect_attempts)
-                    @warn "Connection failed, reconnecting in $(delay)s..." exception =
-                        (e, catch_backtrace())
-                    sleep(delay)
+                    Client.full_reconnect!(inner.ws_client)
                 else
                     @error "Trade core actor failed" exception = (e, catch_backtrace())
                     should_run = false
@@ -168,7 +174,7 @@ module Trade
     function TradeContext(config::Config.config)
         command_ch = Channel{Any}(32)
 
-        inner = InnerTradeContext(config, nothing, command_ch, nothing, Callbacks())
+        inner = InnerTradeContext(config, nothing, command_ch, nothing, Callbacks(), Set{String}())
         ctx = TradeContext(Arc(inner))
 
         inner.core_task = @async core_run(inner)
@@ -218,14 +224,18 @@ module Trade
 
     function subscribe(ctx::TradeContext, topics::Vector{TopicType.T})
         ch = Channel(1)
-        cmd = SubscribeCmd([string(t) for t in topics], ch)
+        str_topics = [string(t) for t in topics]
+        cmd = SubscribeCmd(str_topics, ch)
         request(ctx, cmd)
+        union!(ctx.inner.subscriptions, str_topics)
     end
 
     function unsubscribe(ctx::TradeContext, topics::Vector{TopicType.T})
         ch = Channel(1)
-        cmd = UnsubscribeCmd([string(t) for t in topics], ch)
+        str_topics = [string(t) for t in topics]
+        cmd = UnsubscribeCmd(str_topics, ch)
         request(ctx, cmd)
+        setdiff!(ctx.inner.subscriptions, str_topics)
     end
 
     function history_executions(
@@ -238,9 +248,9 @@ module Trade
         cmd = HttpGetCmd("/v1/trade/execution/history", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return ExecutionResponse(Dict(resp.data))
+            return JSON3.read(JSON3.write(resp.data), ExecutionResponse)
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -249,9 +259,9 @@ module Trade
         cmd = HttpGetCmd("/v1/trade/execution/today", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return TodayExecutionResponse(Dict(resp.data))
+            return JSON3.read(JSON3.write(resp.data), TodayExecutionResponse)
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -267,22 +277,36 @@ module Trade
         cmd = HttpGetCmd("/v1/trade/order/history", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            orders = [Order(o) for o in resp.data["orders"]]
-            df = to_dataframe(orders)
-            sub_df = df[!, [:order_id, :symbol, :side, :status, :order_type, :quantity, :price, :submitted_at]]
-            rename!(sub_df,
-                :order_id => "Order ID",
-                :symbol => "Symbol",
-                :side => "Side",
-                :status => "Status",
-                :order_type => "Type",
-                :quantity => "Quantity",
-                :price => "Price",
-                :submitted_at => "Submitted At",
+            orders_data = map(resp.data.orders) do o
+                d = Dict{String, Any}(String(k) => v for (k, v) in o)
+                d["quantity"] = safeparse(Int64, d["quantity"])
+                d["executed_quantity"] = safeparse(Int64, d["executed_quantity"])
+                d["price"] = safeparse(Float64, d["price"])
+                d["executed_price"] = safeparse(Float64, d["executed_price"])
+                d["submitted_at"] = to_china_time(d["submitted_at"])
+                d["updated_at"] = (isempty(d["updated_at"]) || d["updated_at"] == "0") ? nothing : to_china_time(d["updated_at"])
+                d["trigger_at"] = (isempty(d["trigger_at"]) || d["trigger_at"] == "0") ? nothing : to_china_time(d["trigger_at"])
+                d["expire_date"] = isempty(d["expire_date"]) ? nothing : Date(d["expire_date"])
+                d["last_done"] = safeparse(Float64, d["last_done"])
+                d["trigger_price"] = safeparse(Float64, d["trigger_price"])
+                d["trailing_amount"] = safeparse(Float64, d["trailing_amount"])
+                d["trailing_percent"] = safeparse(Float64, d["trailing_percent"])
+                d["limit_offset"] = safeparse(Float64, d["limit_offset"])
+                return d
+            end
+            orders = JSON3.read(JSON3.write(orders_data), Vector{Order})
+            return DataFrame(
+                "Order ID" => [o.order_id for o in orders],
+                "Symbol" => [o.symbol for o in orders],
+                "Side" => [o.side for o in orders],
+                "Status" => [o.status for o in orders],
+                "Type" => [o.order_type for o in orders],
+                "Quantity" => [o.quantity for o in orders],
+                "Price" => [o.price for o in orders],
+                "Submitted At" => [o.submitted_at for o in orders],
             )
-            return sub_df
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -296,22 +320,36 @@ module Trade
         cmd = HttpGetCmd("/v1/trade/order/today", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            orders = [Order(o) for o in resp.data["orders"]]
-            df = to_dataframe(orders)
-            sub_df = df[!, [:order_id, :symbol, :side, :status, :order_type, :quantity, :price, :submitted_at]]
-            rename!(sub_df,
-                :order_id => "Order ID",
-                :symbol => "Symbol",
-                :side => "Side",
-                :status => "Status",
-                :order_type => "Order Type",
-                :quantity => "Quantity",
-                :price => "Price",
-                :submitted_at => "Submitted At",
+            orders_data = map(resp.data.orders) do o
+                d = Dict{String, Any}(String(k) => v for (k, v) in o)
+                d["quantity"] = safeparse(Int64, d["quantity"])
+                d["executed_quantity"] = safeparse(Int64, d["executed_quantity"])
+                d["price"] = safeparse(Float64, d["price"])
+                d["executed_price"] = safeparse(Float64, d["executed_price"])
+                d["submitted_at"] = to_china_time(d["submitted_at"])
+                d["updated_at"] = (isempty(d["updated_at"]) || d["updated_at"] == "0") ? nothing : to_china_time(d["updated_at"])
+                d["trigger_at"] = (isempty(d["trigger_at"]) || d["trigger_at"] == "0") ? nothing : to_china_time(d["trigger_at"])
+                d["expire_date"] = isempty(d["expire_date"]) ? nothing : Date(d["expire_date"])
+                d["last_done"] = safeparse(Float64, d["last_done"])
+                d["trigger_price"] = safeparse(Float64, d["trigger_price"])
+                d["trailing_amount"] = safeparse(Float64, d["trailing_amount"])
+                d["trailing_percent"] = safeparse(Float64, d["trailing_percent"])
+                d["limit_offset"] = safeparse(Float64, d["limit_offset"])
+                return d
+            end
+            orders = JSON3.read(JSON3.write(orders_data), Vector{Order})
+            return DataFrame(
+                "Order ID" => [o.order_id for o in orders],
+                "Symbol" => [o.symbol for o in orders],
+                "Side" => [o.side for o in orders],
+                "Status" => [o.status for o in orders],
+                "Order Type" => [o.order_type for o in orders],
+                "Quantity" => [o.quantity for o in orders],
+                "Price" => [o.price for o in orders],
+                "Submitted At" => [o.submitted_at for o in orders],
             )
-            return sub_df
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -319,7 +357,7 @@ module Trade
         cmd = HttpPutCmd("/v1/trade/order", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code != 0
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
         return nothing
     end
@@ -328,9 +366,9 @@ module Trade
         cmd = HttpPostCmd("/v1/trade/order", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return SubmitOrderResponse(Dict(resp.data))
+            return JSON3.read(JSON3.write(resp.data), SubmitOrderResponse)
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -339,7 +377,7 @@ module Trade
         cmd = HttpDeleteCmd("/v1/trade/order", params, Channel(1))
         resp = request(ctx, cmd)
         if resp.code != 0
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
         return nothing
     end
@@ -349,9 +387,9 @@ module Trade
         cmd = HttpGetCmd("/v1/asset/account", params, Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return [AccountBalance(Dict(b)) for b in resp.data["list"]]
+            return [StructTypes.construct(AccountBalance, item) for item in resp.data["list"]]
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -369,9 +407,9 @@ module Trade
         cmd = HttpGetCmd("/v1/asset/cashflow", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return [CashFlow(Dict(f)) for f in resp.data.list]
+            return JSON3.read(JSON3.write(resp.data.list), Vector{CashFlow})
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -380,9 +418,9 @@ module Trade
         cmd = HttpGetCmd("/v1/asset/fund", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return FundPositionsResponse(Dict(resp.data))
+            return JSON3.read(JSON3.write(resp.data), FundPositionsResponse)
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -391,9 +429,9 @@ module Trade
         cmd = HttpGetCmd("/v1/asset/stock", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return StockPositionsResponse(Dict(resp.data))
+            return JSON3.read(JSON3.write(resp.data), StockPositionsResponse)
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
@@ -402,30 +440,91 @@ module Trade
         cmd = HttpGetCmd("/v1/risk/margin-ratio", params, Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return MarginRatio(Dict(resp.data))
+            return StructTypes.construct(MarginRatio, resp.data)
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 
-    function order_detail(ctx::TradeContext, order_id::String)
-        params = Dict{String,Any}("order_id" => string(order_id))
-        cmd = HttpGetCmd("/v1/trade/order", params, Channel(1))
-        resp = request(ctx, cmd)
-        if resp.code == 0
-            return OrderDetail(Dict(resp.data))
-        else
-            throw(LongportException(resp.code, "", resp.message))
+function order_detail(ctx::TradeContext, order_id::String)
+    params = Dict{String,Any}("order_id" => string(order_id))
+    cmd = HttpGetCmd("/v1/trade/order", params, Channel(1))
+    resp = request(ctx, cmd)
+    if resp.code == 0
+        d = Dict{String, Any}(String(k) => v for (k, v) in resp.data)
+        d["quantity"] = safeparse(Int64, d["quantity"])
+        d["executed_quantity"] = safeparse(Int64, d["executed_quantity"])
+        d["price"] = safeparse(Float64, d["price"])
+        d["executed_price"] = safeparse(Float64, d["executed_price"])
+        d["submitted_at"] = to_china_time(d["submitted_at"])
+        d["updated_at"] = (isempty(d["updated_at"]) || d["updated_at"] == "0") ? nothing : to_china_time(d["updated_at"])
+        d["trigger_at"] = (isempty(d["trigger_at"]) || d["trigger_at"] == "0") ? nothing : to_china_time(d["trigger_at"])
+        d["expire_date"] = isempty(d["expire_date"]) ? nothing : Date(d["expire_date"])
+        d["last_done"] = safeparse(Float64, d["last_done"])
+        d["trigger_price"] = safeparse(Float64, d["trigger_price"])
+        d["trailing_amount"] = safeparse(Float64, d["trailing_amount"])
+        d["trailing_percent"] = safeparse(Float64, d["trailing_percent"])
+        d["limit_offset"] = safeparse(Float64, d["limit_offset"])
+
+        if haskey(d, "free_amount")
+            d["free_amount"] = safeparse(Float64, d["free_amount"])
         end
+        if haskey(d, "deductions_amount")
+            d["deductions_amount"] = safeparse(Float64, d["deductions_amount"])
+        end
+        if haskey(d, "platform_deducted_amount")
+            d["platform_deducted_amount"] = safeparse(Float64, d["platform_deducted_amount"])
+        end
+
+        if haskey(d, "history") && !isnothing(d["history"])
+            d["history"] = map(d["history"]) do h
+                h_dict = Dict{String, Any}(String(k) => v for (k, v) in h)
+                h_dict["price"] = safeparse(Float64, h_dict["price"])
+                h_dict["quantity"] = safeparse(Int64, h_dict["quantity"])
+                h_dict["time"] = to_china_time(h_dict["time"])
+                return h_dict
+            end
+        end
+
+        if haskey(d, "charge_detail") && !isnothing(d["charge_detail"])
+            cd_dict = Dict{String, Any}(String(k) => v for (k, v) in d["charge_detail"])
+            if haskey(cd_dict, "total_charges") && !isnothing(cd_dict["total_charges"])
+                cd_dict["total_charges"] = safeparse(Float64, cd_dict["total_charges"])
+            end
+            if haskey(cd_dict, "items") && !isnothing(cd_dict["items"])
+                cd_dict["items"] = map(cd_dict["items"]) do item
+                    item_dict = Dict{String, Any}(String(k) => v for (k, v) in item)
+                    if haskey(item_dict, "fees") && !isnothing(item_dict["fees"])
+                        item_dict["fees"] = map(item_dict["fees"]) do fee
+                            fee_dict = Dict{String, Any}(String(k) => v for (k, v) in fee)
+                            if haskey(fee_dict, "fee") && !isnothing(fee_dict["fee"])
+                                fee_dict["fee"] = safeparse(Float64, fee_dict["fee"])
+                            end
+                            return fee_dict
+                        end
+                    end
+                    return item_dict
+                end
+            end
+            d["charge_detail"] = cd_dict
+        end
+
+        return JSON3.read(JSON3.write(d), OrderDetail)
+    else
+        @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
     end
+end
 
     function estimate_max_purchase_quantity(ctx::TradeContext, options::EstimateMaxPurchaseQuantityOptions)
         cmd = HttpGetCmd("/v1/trade/estimate/buy_limit", to_dict(options), Channel(1))
         resp = request(ctx, cmd)
         if resp.code == 0
-            return EstimateMaxPurchaseQuantityResponse(Dict(resp.data))
+            data = resp.data
+            cash_max_qty = safeparse(Int64, data["cash_max_qty"])
+            margin_max_qty = safeparse(Int64, data["margin_max_qty"])
+            return EstimateMaxPurchaseQuantityResponse(cash_max_qty, margin_max_qty)
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     end
 end # module Trade

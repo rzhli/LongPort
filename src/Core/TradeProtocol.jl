@@ -7,7 +7,7 @@ module TradeProtocol
     using ProtoBuf: OneOf
     using EnumX
     using Dates
-    using JSON3
+    using JSON3, StructTypes
     using Printf
     using ..QuoteProtocol: SecurityBoard
     using ..Constant
@@ -26,39 +26,39 @@ module TradeProtocol
     # --- Order Type Enum ---
     @enumx OrderType begin
         UNKNOWN = 0
-        LO          # 限价单 (HK, US)
-        ELO         # 增强限价单 (HK)
-        MO          # 市价单 (HK, US)
-        AO          # 竞价市价单 (HK)
-        ALO         # 竞价限价单 (HK)
-        ODD         # 碎股单挂单 (HK)
-        LIT         # 触价限价单 (HK, US)
-        MIT         # 触价市价单 (HK, US)
-        TSLPAMT     # 跟踪止损限价单 (跟踪金额) (HK, US)
-        TSLPPCT     # 跟踪止损限价单 (跟踪涨跌幅) (HK, US)
-        SLO         # 特殊限价单 (HK)
+        LO = 1      # 限价单 (HK, US)
+        ELO = 2     # 增强限价单 (HK)
+        MO = 3      # 市价单 (HK, US)
+        AO = 4      # 竞价市价单 (HK)
+        ALO = 5     # 竞价限价单 (HK)
+        ODD = 6     # 碎股单挂单 (HK)
+        LIT = 7     # 触价限价单 (HK, US)
+        MIT = 8     # 触价市价单 (HK, US)
+        TSLPAMT = 9 # 跟踪止损限价单 (跟踪金额) (HK, US)
+        TSLPPCT = 10 # 跟踪止损限价单 (跟踪涨跌幅) (HK, US)
+        SLO = 11    # 特殊限价单 (HK)
     end
 
     # --- Order Status Enum ---
     @enumx OrderStatus begin
         Unknown = 0             # 未知
-        NotReported             # 待提交
-        ReplacedNotReported     # 待提交 (改单成功)
-        ProtectedNotReported    # 待提交 (保价订单)
-        VarietiesNotReported    # 待提交 (条件单)
-        Filled                  # 已成交
-        WaitToNew               # 已提待报
-        New                     # 已委托
-        WaitToReplace           # 修改待报
-        PendingReplace          # 待修改
-        Replaced                # 已修改
-        PartialFilled           # 部分成交
-        WaitToCancel            # 撤销待报
-        PendingCancel           # 待撤回
-        Rejected                # 已拒绝
-        Canceled                # 已撤单
-        Expired                 # 已过期
-        PartialWithdrawal       # 部分撤单
+        NotReported = 1         # 待提交
+        ReplacedNotReported = 2 # 待提交 (改单成功)
+        ProtectedNotReported = 3 # 待提交 (保价订单)
+        VarietiesNotReported = 4 # 待提交 (条件单)
+        FilledStatus = 5              # 已成交
+        WaitToNew = 6           # 已提待报
+        NewStatus = 7                 # 已委托
+        WaitToReplace = 8       # 修改待报
+        PendingReplaceStatus = 9      # 待修改
+        ReplacedStatus = 10           # 已修改
+        PartialFilledStatus = 11      # 部分成交
+        WaitToCancel = 12       # 撤销待报
+        PendingCancelStatus = 13      # 待撤回
+        RejectedStatus = 14           # 已拒绝
+        CanceledStatus = 15           # 已撤单
+        ExpiredStatus = 16            # 已过期
+        PartialWithdrawal = 17  # 部分撤单
     end
 
     # 交易网关命令定义
@@ -370,39 +370,41 @@ module TradeProtocol
     Enable or disable outside regular trading hours
     """
     @enumx OutsideRTH begin
-        RTH_ONLY
-        ANY_TIME
-        OVERNIGHT
+        UnknownOutsideRth = 0
+        RTH_ONLY = 1
+        ANY_TIME = 2
+        OVERNIGHT = 3
     end
 
     """
     Commission free status
     """
     @enumx CommissionFreeStatus begin
-        UnknownCommission = 0
-        NoneCommission = 1
+        Unknown = 0
+        None = 1
         Calculated = 2
-        PendingCommission = 3
+        Pending = 3
+        Ready = 4
     end
 
     """
     Deduction status
     """
     @enumx DeductionStatus begin
-        UnknownDeduction = 0
-        NoneDeduction = 1
-        NoData = 2
-        PendingDeduction = 3
-        Done = 4
+        UNKNOWN = 0
+        NONE = 1
+        NO_DATA = 2
+        PENDING = 3
+        DONE = 4
     end
 
     """
     Charge category code
     """
     @enumx ChargeCategoryCode begin
-        UnknownCharge = 0
-        Broker = 1
-        ThirdParty = 2
+        UNKNOWN = 0
+        BROKER_FEES = 1
+        THIRD_FEES = 2
     end
 
     """
@@ -446,18 +448,8 @@ module TradeProtocol
         trade_done_at::DateTime
         quantity::Int64
         price::Float64
-
-        function Execution(data::Dict)
-            new(
-                get(data, "order_id", ""),
-                get(data, "trade_id", ""),
-                get(data, "symbol", ""),
-                DateTime(get(data, "trade_done_at", "1970-01-01T00:00:00Z")[1:19]),
-                safe_parse(Int64, get(data, "quantity", 0)),
-                safe_parse(Float64, get(data, "price", 0.0))
-            )
-        end
     end
+    StructTypes.StructType(::Type{Execution}) = StructTypes.Struct()
 
     """
     Order information
@@ -489,38 +481,8 @@ module TradeProtocol
         currency::String
         outside_rth::OutsideRTH.T
         remark::String
-
-        function Order(data::AbstractDict)
-            new(
-                get(data, "order_id", ""),
-                get(data, "status", "Unknown") |> s -> getproperty(OrderStatus, Symbol(replace(s, "Status" => ""))),
-                get(data, "stock_name", ""),
-                safe_parse(Int64, get(data, "quantity", "0")),
-                safe_parse(Int64, get(data, "executed_quantity", "0")),
-                safe_parse(Float64, get(data, "price", nothing)),
-                safe_parse(Float64, get(data, "executed_price", nothing)),
-                unix2datetime(safe_parse(Int64, get(data, "submitted_at", "0"))),
-                get(data, "side", "UnknownSide") |> s -> getproperty(OrderSide, Symbol(s)),
-                get(data, "symbol", ""),
-                get(data, "order_type", "UNKNOWN") |> s -> getproperty(OrderType, Symbol(s)),
-                safe_parse(Float64, get(data, "last_done", nothing)),
-                safe_parse(Float64, get(data, "trigger_price", nothing)),
-                get(data, "msg", ""),
-                get(data, "tag", "UnknownTag") |> s -> getproperty(OrderTag, Symbol(s)),
-                get(data, "time_in_force", "UnknownTIF") |> s -> getproperty(TimeInForceType, Symbol(s)),
-                get(data, "expire_date", nothing) |> d -> isnothing(d) ? nothing : Date(d),
-                get(data, "updated_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
-                get(data, "trigger_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
-                safe_parse(Float64, get(data, "trailing_amount", nothing)),
-                safe_parse(Float64, get(data, "trailing_percent", nothing)),
-                safe_parse(Float64, get(data, "limit_offset", nothing)),
-                get(data, "trigger_status", "NOT_USED") |> s -> getproperty(TriggerStatus, Symbol(s)),
-                get(data, "currency", ""),
-                get(data, "outside_rth", "RTH_ONLY") |> s -> getproperty(OutsideRTH, Symbol(s)),
-                get(data, "remark", "")
-            )
-        end
     end
+    StructTypes.StructType(::Type{Order}) = StructTypes.Struct()
 
 
     """
@@ -552,37 +514,8 @@ module TradeProtocol
         last_share::Union{Int64, Nothing}
         last_price::Union{Float64, Nothing}
         remark::String
-
-        function PushOrderChanged(data::Dict)
-            new(
-                get(data, "side", "UnknownSide") |> s -> getproperty(OrderSide, Symbol(s)),
-                get(data, "stock_name", ""),
-                safe_parse(Int64, get(data, "submitted_quantity", nothing)),
-                get(data, "symbol", ""),
-                get(data, "order_type", "UNKNOWN") |> s -> getproperty(OrderType, Symbol(s)),
-                safe_parse(Float64, get(data, "submitted_price", nothing)),
-                safe_parse(Int64, get(data, "executed_quantity", nothing)),
-                safe_parse(Float64, get(data, "executed_price", nothing)),
-                get(data, "order_id", ""),
-                get(data, "currency", ""),
-                get(data, "status", "Unknown") |> s -> getproperty(OrderStatus, Symbol(replace(s, "Status" => ""))),
-                get(data, "submitted_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
-                get(data, "updated_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
-                safe_parse(Float64, get(data, "trigger_price", nothing)),
-                get(data, "msg", ""),
-                get(data, "tag", "UnknownTag") |> s -> getproperty(OrderTag, Symbol(s)),
-                get(data, "trigger_status", "UnknownTrigger") |> s -> getproperty(TriggerStatus, Symbol(s)),
-                get(data, "trigger_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
-                safe_parse(Float64, get(data, "trailing_amount", nothing)),
-                safe_parse(Float64, get(data, "trailing_percent", nothing)),
-                safe_parse(Float64, get(data, "limit_offset", nothing)),
-                get(data, "account_no", ""),
-                safe_parse(Int64, get(data, "last_share", nothing)),
-                safe_parse(Float64, get(data, "last_price", nothing)),
-                get(data, "remark", "")
-            )
-        end
     end
+    StructTypes.StructType(::Type{PushOrderChanged}) = StructTypes.Struct()
 
     """
     Margin ratio information
@@ -591,14 +524,15 @@ module TradeProtocol
         im_factor::Float64
         mm_factor::Float64
         fm_factor::Float64
+    end
+    StructTypes.StructType(::Type{MarginRatio}) = StructTypes.CustomStruct()
 
-        function MarginRatio(data::Dict)
-            new(
-                safe_parse(Float64, get(data, "im_factor", "0.0")),
-                safe_parse(Float64, get(data, "mm_factor", "0.0")),
-                safe_parse(Float64, get(data, "fm_factor", "0.0"))
-            )
-        end
+    function StructTypes.construct(::Type{MarginRatio}, obj::JSON3.Object)
+        MarginRatio(
+            safeparse(Float64, obj.im_factor),
+            safeparse(Float64, obj.mm_factor),
+            safeparse(Float64, obj.fm_factor),
+        )
     end
 
     function Base.show(io::IO, r::MarginRatio)
@@ -613,16 +547,8 @@ module TradeProtocol
         name::String
         fee::Float64
         currency::String
-
-        function OrderChargeFee(data::Dict)
-            new(
-                get(data, "code", ""),
-                get(data, "name", ""),
-                get(data, "fee", 0.0),
-                get(data, "currency", "")
-            )
-        end
     end
+    StructTypes.StructType(::Type{OrderChargeFee}) = StructTypes.Struct()
 
     """
     Order charge item
@@ -631,33 +557,19 @@ module TradeProtocol
         code::String
         name::String
         fees::Vector{OrderChargeFee}
-
-        function OrderChargeItem(data::Dict)
-            new(
-                get(data, "code", ""),
-                get(data, "name", ""),
-                [OrderChargeFee(Dict(f)) for f in get(data, "fees", [])]
-            )
-        end
     end
+    StructTypes.StructType(::Type{OrderChargeItem}) = StructTypes.Struct()
 
 
     """
     Order charge detail
     """
     struct OrderChargeDetail
-        total_charges::Float64
+        total_charges::Union{Float64, Nothing}
         currency::String
         items::Vector{OrderChargeItem}
-
-        function OrderChargeDetail(data::Dict)
-            new(
-                get(data, "total_charges", 0.0),
-                get(data, "currency", ""),
-                [OrderChargeItem(Dict(i)) for i in get(data, "items", [])]
-            )
-        end
     end
+    StructTypes.StructType(::Type{OrderChargeDetail}) = StructTypes.Struct()
 
     """
     Order history detail
@@ -668,17 +580,8 @@ module TradeProtocol
         status::OrderStatus.T
         msg::String
         time::DateTime
-
-        function OrderHistoryDetail(data::Dict)
-            new(
-                get(data, "price", 0.0),
-                get(data, "quantity", 0),
-                OrderStatus.T(get(data, "status", 0)),
-                get(data, "msg", ""),
-                unix2datetime(get(data, "time", 0))
-            )
-        end
     end
+    StructTypes.StructType(::Type{OrderHistoryDetail}) = StructTypes.Struct()
 
     """
     Order detail
@@ -721,48 +624,21 @@ module TradeProtocol
         platform_deducted_currency::Union{String, Nothing}
         history::Vector{OrderHistoryDetail}
         charge_detail::OrderChargeDetail
+    end
+    StructTypes.StructType(::Type{OrderDetail}) = StructTypes.Struct()
 
-        function OrderDetail(data::Dict)
-            new(
-                get(data, "order_id", ""),
-                get(data, "status", "Unknown") |> s -> getproperty(OrderStatus, Symbol(replace(s, "Status" => ""))),
-                get(data, "stock_name", ""),
-                safe_parse(Int64, get(data, "quantity", "0")),
-                safe_parse(Int64, get(data, "executed_quantity", "0")),
-                safe_parse(Float64, get(data, "price", nothing)),
-                safe_parse(Float64, get(data, "executed_price", nothing)),
-                unix2datetime(safe_parse(Int64, get(data, "submitted_at", "0"))),
-                get(data, "side", "UnknownSide") |> s -> getproperty(OrderSide, Symbol(s)),
-                get(data, "symbol", ""),
-                get(data, "order_type", "UNKNOWN") |> s -> getproperty(OrderType, Symbol(s)),
-                safe_parse(Float64, get(data, "last_done", nothing)),
-                safe_parse(Float64, get(data, "trigger_price", nothing)),
-                get(data, "msg", ""),
-                get(data, "tag", "UnknownTag") |> s -> getproperty(OrderTag, Symbol(s)),
-                get(data, "time_in_force", "UnknownTIF") |> s -> getproperty(TimeInForceType, Symbol(s)),
-                get(data, "expire_date", nothing) |> d -> isnothing(d) ? nothing : Date(d),
-                get(data, "updated_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
-                get(data, "trigger_at", nothing) |> t -> isnothing(t) ? nothing : unix2datetime(safe_parse(Int64, t)),
-                safe_parse(Float64, get(data, "trailing_amount", nothing)),
-                safe_parse(Float64, get(data, "trailing_percent", nothing)),
-                safe_parse(Float64, get(data, "limit_offset", nothing)),
-                get(data, "trigger_status", "UnknownTrigger") |> s -> getproperty(TriggerStatus, Symbol(s)),
-                get(data, "currency", ""),
-                get(data, "outside_rth", "RTH_ONLY") |> s -> getproperty(OutsideRTH, Symbol(s)),
-                get(data, "remark", ""),
-                get(data, "free_status", "UnknownCommission") |> s -> getproperty(CommissionFreeStatus, Symbol(s)),
-                safe_parse(Float64, get(data, "free_amount", nothing)),
-                get(data, "free_currency", nothing),
-                get(data, "deductions_status", "UnknownDeduction") |> s -> getproperty(DeductionStatus, Symbol(s)),
-                safe_parse(Float64, get(data, "deductions_amount", nothing)),
-                get(data, "deductions_currency", nothing),
-                get(data, "platform_deducted_status", "UnknownDeduction") |> s -> getproperty(DeductionStatus, Symbol(s)),
-                safe_parse(Float64, get(data, "platform_deducted_amount", nothing)),
-                get(data, "platform_deducted_currency", nothing),
-                [OrderHistoryDetail(Dict(h)) for h in get(data, "history", [])],
-                OrderChargeDetail(Dict(get(data, "charge_detail", Dict())))
-            )
-        end
+    function Base.show(io::IO, d::OrderDetail)
+        println(io, "Order Details:")
+        println(io, "  Order ID: ", d.order_id)
+        println(io, "  Symbol: ", d.symbol, " (", d.stock_name, ")")
+        println(io, "  Status: ", d.status)
+        println(io, "  Side: ", d.side)
+        println(io, "  Order Type: ", d.order_type)
+        println(io, "  Submitted: ", d.quantity, " @ ", d.price)
+        println(io, "  Executed: ", d.executed_quantity, " @ ", d.executed_price)
+        println(io, "  Submitted At: ", d.submitted_at)
+        println(io, "  Updated At: ", d.updated_at)
+        println(io, "  Message: ", d.msg)
     end
 
     """
@@ -771,14 +647,8 @@ module TradeProtocol
     struct EstimateMaxPurchaseQuantityResponse
         cash_max_qty::Int64
         margin_max_qty::Int64
-
-        function EstimateMaxPurchaseQuantityResponse(data::Dict)
-            new(
-                get(data, "cash_max_qty", 0),
-                get(data, "margin_max_qty", 0)
-            )
-        end
     end
+    StructTypes.StructType(::Type{EstimateMaxPurchaseQuantityResponse}) = StructTypes.Struct()
 
     """
     Frozen transaction fee
@@ -786,14 +656,8 @@ module TradeProtocol
     struct FrozenTransactionFee
         currency::Currency.T
         frozen_transaction_fee::Float64
-        
-        function FrozenTransactionFee(data::Dict)
-            new(
-                getfield(Currency, Symbol(get(data, "currency", "HKD"))),
-                get(data, "frozen_transaction_fee", 0.0)
-            )
-        end
     end
+    StructTypes.StructType(::Type{FrozenTransactionFee}) = StructTypes.Struct()
 
     function Base.show(io::IO, fee::FrozenTransactionFee)
         print(io, "    - Currency: ", fee.currency, ", Fee: ", fee.frozen_transaction_fee)
@@ -804,11 +668,8 @@ module TradeProtocol
     """
     struct SubmitOrderResponse
         order_id::String
-        
-        function SubmitOrderResponse(data::Dict)
-            new(get(data, :order_id, ""))
-        end
     end
+    StructTypes.StructType(::Type{SubmitOrderResponse}) = StructTypes.Struct()
 
     """
     Cash info
@@ -819,16 +680,18 @@ module TradeProtocol
         frozen_cash::Float64
         settling_cash::Float64
         currency::Currency.T
-        
-        function CashInfo(data::Dict)
-            new(
-                get(data, "withdraw_cash", 0.0),
-                get(data, "available_cash", 0.0),
-                get(data, "frozen_cash", 0.0),
-                get(data, "settling_cash", 0.0),
-                getfield(Currency, Symbol(get(data, "currency", "HKD")))
-            )
-        end
+    end
+
+    StructTypes.StructType(::Type{CashInfo}) = StructTypes.CustomStruct()
+
+    function StructTypes.construct(::Type{CashInfo}, obj::JSON3.Object)
+        CashInfo(
+            safeparse(Float64, obj.withdraw_cash),
+            safeparse(Float64, obj.available_cash),
+            safeparse(Float64, obj.frozen_cash),
+            safeparse(Float64, obj.settling_cash),
+            safeparse(Currency.T, obj.currency),
+        )
     end
 
     function Base.show(io::IO, info::CashInfo)
@@ -856,24 +719,26 @@ module TradeProtocol
         buy_power::Float64
         frozen_transaction_fees::Vector{FrozenTransactionFee}
         market::Union{Market.T,Nothing}
+    end
 
-        function AccountBalance(data::Dict)
-            new(
-                get(data, "total_cash", 0.0),
-                get(data, "max_finance_amount", 0.0),
-                get(data, "remaining_finance_amount", 0.0),
-                RiskLevel.T(get(data, "risk_level", 0)),
-                get(data, "margin_call", 0.0),
-                getfield(Currency, Symbol(get(data, "currency", "HKD"))),
-                [CashInfo(info) for info in get(data, "cash_infos", [])],
-                get(data, "net_assets", 0.0),
-                get(data, "init_margin", 0.0),
-                get(data, "maintenance_margin", 0.0),
-                get(data, "buy_power", 0.0),
-                [FrozenTransactionFee(fee) for fee in get(data, "frozen_transaction_fees", [])],
-                haskey(data, "market") ? getfield(Market, Symbol(uppercase(data["market"]))) : nothing
-            )
-        end
+    StructTypes.StructType(::Type{AccountBalance}) = StructTypes.CustomStruct()
+
+    function StructTypes.construct(::Type{AccountBalance}, obj::JSON3.Object)
+        AccountBalance(
+            safeparse(Float64, obj.total_cash),
+            safeparse(Float64, obj.max_finance_amount),
+            safeparse(Float64, obj.remaining_finance_amount),
+            safeparse(RiskLevel.T, obj.risk_level),
+            safeparse(Float64, obj.margin_call),
+            safeparse(Currency.T, obj.currency),
+            obj.cash_infos,
+            safeparse(Float64, obj.net_assets),
+            safeparse(Float64, obj.init_margin),
+            safeparse(Float64, obj.maintenance_margin),
+            safeparse(Float64, obj.buy_power),
+            obj.frozen_transaction_fees,
+            haskey(obj, :market) ? obj.market : nothing,
+        )
     end
 
     function Base.show(io::IO, balance::AccountBalance)
@@ -917,20 +782,8 @@ module TradeProtocol
         business_time::DateTime
         symbol::Union{String, Nothing}
         description::String
-        
-        function CashFlow(data::Dict)
-            new(
-                get(data, "transaction_flow_name", ""),
-                CashFlowDirection(get(data, "direction", 0)),
-                BalanceType(get(data, "business_type", 0)),
-                get(data, "balance", 0.0),
-                get(data, "currency", ""),
-                DateTime(get(data, "business_time", "1970-01-01T00:00:00Z")[1:19]),
-                get(data, "symbol", nothing),
-                get(data, "description", "")
-            )
-        end
     end
+    StructTypes.StructType(::Type{CashFlow}) = StructTypes.Struct()
 
     """
     Fund position
@@ -943,19 +796,8 @@ module TradeProtocol
         current_net_asset_value::String
         cost_net_asset_value::String
         net_asset_value_day::String
-
-        function FundPosition(data::Dict)
-            new(
-                get(data, "symbol", ""),
-                get(data, "symbol_name", ""),
-                get(data, "currency", ""),
-                get(data, "holding_units", "0"),
-                get(data, "current_net_asset_value", "0"),
-                get(data, "cost_net_asset_value", "0"),
-                get(data, "net_asset_value_day", "")
-            )
-        end
     end
+    StructTypes.StructType(::Type{FundPosition}) = StructTypes.Struct()
 
     """
     Fund position channel
@@ -963,25 +805,16 @@ module TradeProtocol
     struct FundPositionChannel
         account_channel::String
         fund_info::Vector{FundPosition}
-        
-        function FundPositionChannel(data::Dict)
-            new(
-                get(data, "account_channel", ""),
-                [FundPosition(pos) for pos in get(data, "fund_info", [])]
-            )
-        end
     end
+    StructTypes.StructType(::Type{FundPositionChannel}) = StructTypes.Struct()
 
     """
     Fund positions response
     """
     struct FundPositionsResponse
         list::Vector{FundPositionChannel}
-        
-        function FundPositionsResponse(data::Dict)
-            new([FundPositionChannel(ch) for ch in get(data, "list", [])])
-        end
     end
+    StructTypes.StructType(::Type{FundPositionsResponse}) = StructTypes.Struct()
 
     """
     Stock position
@@ -995,71 +828,33 @@ module TradeProtocol
         cost_price::Float64
         market::String  # 对应Python版本的Market类型
         init_quantity::Union{Float64, Nothing}
-        
-        function StockPosition(data::Dict)
-            new(
-                get(data, "symbol", ""),
-                get(data, "symbol_name", ""),
-                safe_parse(Float64, get(data, "quantity", 0.0)),
-                safe_parse(Float64, get(data, "available_quantity", 0.0)),
-                get(data, "currency", ""),
-                safe_parse(Float64, get(data, "cost_price", 0.0)),
-                get(data, "market", ""),
-                safe_parse(Float64, get(data, "init_quantity", nothing))
-            )
-        end
     end
+    StructTypes.StructType(::Type{StockPosition}) = StructTypes.Struct()
 
     """
     Stock position channel
     """
     struct StockPositionChannel
         account_channel::String
-        positions::Vector{StockPosition}
-        
-        function StockPositionChannel(data::Dict)
-            new(
-                get(data, "account_channel", ""),
-                [StockPosition(pos) for pos in get(data, "positions", [])]
-            )
-        end
+        stock_info::Vector{StockPosition}
     end
+    StructTypes.StructType(::Type{StockPositionChannel}) = StructTypes.Struct()
 
     """
     Stock positions response
     """
     struct StockPositionsResponse
-        channels::Vector{StockPositionChannel}
-        
-        function StockPositionsResponse(data::Dict)
-            new([StockPositionChannel(ch) for ch in get(data, "channels", [])])
-        end
+        list::Vector{StockPositionChannel}
     end
+    StructTypes.StructType(::Type{StockPositionsResponse}) = StructTypes.Struct()
 
     """
     Today execution response
     """
     struct TodayExecutionResponse
         trades::Vector{Execution}
-        
-        function TodayExecutionResponse(data::Dict)
-            executions = []
-            if haskey(data, "trades")
-                for trade_data in data["trades"]
-                    execution = Execution(
-                        get(trade_data, "order_id", ""),
-                        get(trade_data, "trade_id", ""),
-                        get(trade_data, "symbol", ""),
-                        DateTime(get(trade_data, "trade_done_at", "1970-01-01T00:00:00Z")[1:19]),
-                        get(trade_data, "quantity", 0),
-                        get(trade_data, "price", 0.0)
-                    )
-                    push!(executions, execution)
-                end
-            end
-            new(executions)
-        end
     end
+    StructTypes.StructType(::Type{TodayExecutionResponse}) = StructTypes.Struct()
 
     """
     History execution response
@@ -1067,25 +862,8 @@ module TradeProtocol
     struct ExecutionResponse
         trades::Vector{Execution}
         has_more::Bool
-        
-        function ExecutionResponse(data::Dict)
-            executions = []
-            if haskey(data, "trades")
-                for trade_data in data["trades"]
-                    execution = Execution(
-                        get(trade_data, "order_id", ""),
-                        get(trade_data, "trade_id", ""),
-                        get(trade_data, "symbol", ""),
-                        DateTime(get(trade_data, "trade_done_at", "1970-01-01T00:00:00Z")[1:19]),
-                        get(trade_data, "quantity", 0),
-                        get(trade_data, "price", 0.0)
-                    )
-                    push!(executions, execution)
-                end
-            end
-            new(executions, get(data, "has_more", false))
-        end
     end
+    StructTypes.StructType(::Type{ExecutionResponse}) = StructTypes.Struct()
 
     # --- Request Option Structs ---
 

@@ -1,3 +1,4 @@
+__precompile__()
 module LongPort
 
     using TOML, Dates
@@ -30,10 +31,10 @@ module LongPort
     using .QuotePush
     using .Quote
 
-    export Quote, Trade
+    export Quote, Trade, Config
     
            # Config 模块    Constant 模块    
-    export config, from_toml, Market, Currency 
+    export config, Market, Currency 
            
            # QuoteProtocol模块
     export PushQuote, PushDepth, PushBrokers, PushTrade,                     # 结构体类型Struct

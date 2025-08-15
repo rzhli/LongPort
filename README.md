@@ -3,6 +3,9 @@
 # Julia SDK for LongPort API
 This is an unofficial SDK, currently for personal use only. Some functions in the Trade module have not been tested yet. Issues are welcome.
 
+## Release Notes
+See [NEWS.md](NEWS.md) for detailed release notes.
+
 References:
 
 1. [Official Documentation](https://open.longportapp.com/en/docs)
@@ -104,7 +107,7 @@ Quote.disconnect!(ctx)
 using LongPort
 
 # Load configuration from TOML file
-cfg = from_toml()
+cfg = Config.from_toml()
 
 # Create and connect to TradeContext
 ctx = TradeContext(cfg)

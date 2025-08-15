@@ -3,7 +3,7 @@ module Config
     using TOML
     using HTTP, JSON3, SHA, Base64, Dates
     using ..Constant
-    using ..Errors: LongportException
+    using ..Errors: LongPortError
 
     export config, from_toml
 

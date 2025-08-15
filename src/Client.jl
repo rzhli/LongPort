@@ -13,9 +13,12 @@ using ..Errors
 
 export WSClient, refresh_token, post, put, delete
 
+# HTTP Client Constants
+const DEFAULT_TIMEOUT = (connect=10, read=20, write=20)
+const RETRIES = 3
+const POOL = HTTP.Pool(20)
 # WebSocket Client Constants (参考 Rust 实现)
 const REQUEST_TIMEOUT = 30.0  # seconds
-const HEARTBEAT_TIMEOUT = 120.0  # seconds
 
 # 认证和心跳命令 (use ControlProtocol enum values)
 const COMMAND_CODE_AUTH = UInt8(ControlProtocol.ControlCommand.CMD_AUTH)
@@ -111,9 +114,9 @@ function get(config::Config.config, path::String; params::Dict{String,Any} = Dic
         headers["X-Api-Signature"] = signature
         
         # 发送HTTP GET请求
-        response = HTTP.get(full_url, headers = headers)
+        response = HTTP.get(full_url, headers = headers, pool = POOL, readtimeout=DEFAULT_TIMEOUT.read, retries=RETRIES)
         
-        return String(response.body)
+        return response
     catch e
         @error "HTTP GET请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
@@ -165,7 +168,7 @@ function get_otp(config::Config.config)::NamedTuple{(:otp, :limit, :online), Tup
                 online = resp.data.online
             )
         else
-            throw(LongportException(resp.code, "", resp.message))
+            @lperror(resp.code, resp.message, get(resp.headers, "x-request-id", nothing))
         end
     catch e
         @error "获取OTP失败" exception=(e, catch_backtrace())
@@ -202,10 +205,9 @@ function post(config::Config.config, path::String; body::Dict=Dict())
         headers["X-Api-Signature"] = signature
         
         # 发送HTTP POST请求
-        response = HTTP.post(full_url, headers = headers, body = body_str)
+        response = HTTP.post(full_url, headers = headers, body = body_str, pool = POOL, readtimeout=DEFAULT_TIMEOUT.read, retries=RETRIES)
         
-        return String(response.body)
-        return String(response.body)
+        return response
     catch e
         @error "HTTP POST请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
@@ -229,9 +231,9 @@ function put(config::Config.config, path::String; body::Dict=Dict())
         signature = sign("PUT", path, headers, "", body_str, config)
         headers["X-Api-Signature"] = signature
         
-        response = HTTP.put(full_url, headers = headers, body = body_str)
+        response = HTTP.put(full_url, headers = headers, body = body_str, pool = POOL, readtimeout=DEFAULT_TIMEOUT.read, retries=RETRIES)
         
-        return String(response.body)
+        return response
     catch e
         @error "HTTP PUT请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
@@ -266,9 +268,9 @@ function delete(config::Config.config, path::String; params::Dict{String,Any} = 
         signature = sign("DELETE", path, headers, query_string, "", config)
         headers["X-Api-Signature"] = signature
         
-        response = HTTP.delete(full_url, headers = headers)
+        response = HTTP.delete(full_url, headers = headers, pool = POOL, readtimeout=DEFAULT_TIMEOUT.read, retries=RETRIES)
         
-        return String(response.body)
+        return response
     catch e
         @error "HTTP DELETE请求异常" path=path exception=(e, catch_backtrace())
         rethrow(e)
@@ -373,7 +375,7 @@ function connect!(client::WSClient)
     end
     
     if !client.connected
-        throw(LongportException("WebSocket连接或认证超时"))
+        @lperror(408, "WebSocket连接或认证超时")
     end
 end
 
@@ -386,28 +388,25 @@ function disconnect!(client::WSClient)
     if !client.connected
         return
     end
-
-    @info "正在断开 WebSocket 连接..."
-
-    # Set connected to false first to signal other loops to stop.
     client.connected = false
 
-    # Interrupt the heartbeat task
+    @info "正在断开 WebSocket 连接..." session_id=client.session_id
+
     if !isnothing(client.heartbeat_task) && !istaskdone(client.heartbeat_task)
-        schedule(client.heartbeat_task, InterruptException(); error = true)
+        schedule(client.heartbeat_task, InterruptException(); error=true)
+        client.heartbeat_task = nothing
     end
 
-    # Interrupt the reconnect task
     if !isnothing(client.reconnect_task) && !istaskdone(client.reconnect_task)
-        schedule(client.reconnect_task, InterruptException(); error = true)
+        schedule(client.reconnect_task, InterruptException(); error=true)
+        client.reconnect_task = nothing
     end
 
-    # 关闭 WebSocket 连接
     if !isnothing(client.ws) && isopen(client.ws.io)
         try
             WebSockets.close(client.ws)
         catch e
-            @warn "关闭 WebSocket 连接时发生错误" exception=e
+            # Ignore errors during close, as the connection might already be dead
         end
     end
 
@@ -483,29 +482,20 @@ function start_heartbeat_loop(client::WSClient)
     client.heartbeat_task = @async begin
         try
             @info "启动心跳循环"
-            heartbeat_id_counter = 1
             while client.connected && !isnothing(client.ws) && isopen(client.ws.io)
-                sleep(HEARTBEAT_TIMEOUT / 2) # Send heartbeat more frequently than timeout
+                sleep(30) # Send a ping every 30 seconds
                 
                 try
-                    @debug "发送心跳"
-                    
-                    # 创建心跳包
-                    heartbeat_msg = ControlProtocol.Heartbeat(round(Int64, time() * 1000), heartbeat_id_counter)
-                    
-                    # 序列化心跳包
-                    heartbeat_body = ControlProtocol.encode(heartbeat_msg)
-                    
-                    send_request_packet(client, COMMAND_CODE_HEARTBEAT, heartbeat_body)
-                    heartbeat_id_counter += 1
+                    # Use WebSocket's built-in ping for network-level keep-alive
+                    WebSockets.ping(client.ws)
+                    @debug "发送 WebSocket Ping 帧"
                 catch e
-                    # If the client is no longer connected, this error is expected during shutdown.
-                    # We can safely ignore it and exit the loop.
                     if client.connected
-                        @warn "发送心跳失败" exception=(e, catch_backtrace())
+                        @warn "发送 Ping 帧失败，可能连接已断开" exception=(e, catch_backtrace())
+                        # Trigger reconnection logic if ping fails
+                        full_reconnect!(client)
                     end
-                    # If sending fails, the connection is likely broken. Exit the loop.
-                    break
+                    break # Exit loop on failure
                 end
             end
         catch e
@@ -513,7 +503,7 @@ function start_heartbeat_loop(client::WSClient)
                 @error "心跳循环异常退出" exception=(e, catch_backtrace())
             end
         finally
-            @info "心跳循环已停止"
+            @info "心跳循环已停止" session_id=client.session_id
         end
     end
 end
@@ -650,7 +640,7 @@ function start_message_loop(client::WSClient)
                 if e isa InterruptException
                     @info "消息循环被中断"
                 elseif e isa EOFError
-                    @info "WebSocket正常关闭"
+                    @info "WebSocket 连接正常关闭" session_id=client.session_id
                     disconnect!(client)
                 else
                     @error "消息循环异常" exception=(e, catch_backtrace())
@@ -660,7 +650,7 @@ function start_message_loop(client::WSClient)
         catch e
             @error "消息循环外层异常" exception=(e, catch_backtrace())
         finally
-            @info "消息处理循环已停止"
+            @info "消息处理循环已停止" session_id=client.session_id
         end
     end
 end
@@ -801,8 +791,8 @@ function ws_request(
         business_code = err_proto.code
         business_msg = err_proto.msg # Use the message from the decoded response
         
-        err_msg = "API请求失败: (协议码=$status_code, 业务码=$business_code) - $business_msg"
-        throw(LongportException(Int(business_code), nothing, err_msg))
+        err_msg = "API请求失败: (协议码=$status_code) - $business_msg"
+        @lperror(Int(business_code), err_msg, nothing, response_body)
     end
     return response_body
 end

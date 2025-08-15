@@ -81,7 +81,7 @@ result = get_or_update(cache) do
 end
 ```
 """
-function get_or_update(update_func::Function, cache::SimpleCache{T})::T where T
+function get_or_update(cache::SimpleCache{T}, update_func::Function)::T where T
     # 检查是否有缓存且未过期
     if !isnothing(cache.item) && !is_expired(cache.item)
         return cache.item.data
