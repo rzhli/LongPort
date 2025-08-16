@@ -58,9 +58,7 @@ history_offset_data = history_candlesticks_by_offset(
     ctx, "700.HK", CandlePeriod.FOUR_HOUR, AdjustType.NO_ADJUST, Direction.BACKWARD, 10; date = DateTime(2024, 1, 1)
 )
 # 2023-01-01 to 2023-02-01
-history_date_data = history_candlesticks_by_date(
-    ctx, "700.HK", CandlePeriod.TWENTY_MINUTE, AdjustType.NO_ADJUST; start_date=Date(2023, 5, 1), end_date=Date(2023, 12, 1)
-)
+history_date_data = history_candlesticks_by_date(ctx, "AAPL.US", CandlePeriod.ONE_MINUTE, AdjustType.NO_ADJUST; trade_sessions = TradeSession.Intraday)
 
 ### 获取标的的期权链到期日列表
 expiry_date = option_chain_expiry_date_list(ctx, "AAPL.US")

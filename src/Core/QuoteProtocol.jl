@@ -111,7 +111,7 @@ module QuoteProtocol
         PreTrade = 1               # 盘前
         PostTrade = 2              # 盘后
         OvernightTrade = 3         # 夜盘
-        All = 100
+        All = 4
     end
     show(io::IO, x::TradeSession.T) = print(io, Symbol(x))
 
