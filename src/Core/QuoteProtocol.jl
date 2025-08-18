@@ -874,6 +874,7 @@ module QuoteProtocol
         return Candlestick(close, open, low, high, volume, turnover, timestamp, trade_session)
     end
 
+
     # K线请求
     struct SecurityCandlestickRequest
         symbol::String
@@ -2009,19 +2010,22 @@ module QuoteProtocol
     # 查询当日分时请求
     struct SecurityIntradayRequest
         symbol::String
+        trade_session::TradeSession.T
     end
-    default_values(::Type{SecurityIntradayRequest}) = (;symbol = "")
-    field_numbers(::Type{SecurityIntradayRequest}) = (;symbol = 1)
+    default_values(::Type{SecurityIntradayRequest}) = (;symbol = "", trade_session = TradeSession.All)
+    field_numbers(::Type{SecurityIntradayRequest}) = (;symbol = 1, trade_session = 2)
 
     function encode(e::ProtoBuf.AbstractProtoEncoder, x::SecurityIntradayRequest)
         initpos = position(e.io)
         !isempty(x.symbol) && encode(e, 1, x.symbol)
+        x.trade_session != TradeSession.All && encode(e, 2, x.trade_session)
         return position(e.io) - initpos
     end
 
     function _encoded_size(x::SecurityIntradayRequest)
         encoded_size = 0
         !isempty(x.symbol) && (encoded_size += _encoded_size(x.symbol, 1))
+        x.trade_session != TradeSession.All && (encoded_size += _encoded_size(x.trade_session, 2))
         return encoded_size
     end
 
@@ -3023,4 +3027,6 @@ module QuoteProtocol
         end
         return HistoryMarketTemperatureResponse(list, type)
     end
+
+   
 end # module

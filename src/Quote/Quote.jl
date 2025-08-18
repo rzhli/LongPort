@@ -546,8 +546,8 @@ function brokers(ctx::QuoteContext, symbol::String)
     return (symbol = resp.symbol, ask_brokers = to_namedtuple(resp.ask_brokers), bid_brokers = to_namedtuple(resp.bid_brokers))
 end
 
-function intraday(ctx::QuoteContext, symbol::String)
-    req = SecurityIntradayRequest(symbol)
+function intraday(ctx::QuoteContext, symbol::String; trade_session::TradeSession.T = TradeSession.All)
+    req = SecurityIntradayRequest(symbol, trade_session)
     cmd = GenericRequestCmd(QuoteCommand.QueryIntraday, req, SecurityIntradayResponse, Channel(1))
     resp = request(ctx, cmd)
 

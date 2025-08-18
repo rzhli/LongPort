@@ -137,4 +137,5 @@ module QuotePush
     function set_on_trades!(callbacks::Callbacks, callback::Function)
         callbacks.trades = callback
     end
+
 end # module QuotePush

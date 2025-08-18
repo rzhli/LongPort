@@ -39,7 +39,7 @@ resp = participants(ctx)
 resp = trades(ctx, "700.HK", 500)
 
 ### 获取标的当日分时（DataFrame格式）
-resp = intraday(ctx, "700.HK")
+resp = intraday(ctx, "AAPL.US")
 
 # 获取标的历史K线（DataFrame格式）
 #=

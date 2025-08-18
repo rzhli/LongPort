@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.2.8 (2025-08-18)
+
+### New Features
+
+- **Intraday Data**: The `intraday` function now supports a `trade_session` parameter, allowing users to fetch data for specific trading sessions (e.g., pre-market, post-market).
+
 ## v0.2.7 (2025-08-15)
 
 ### Major Improvements
