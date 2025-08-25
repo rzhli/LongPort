@@ -76,7 +76,7 @@ end
 
         while should_run
             try
-                ws = Client.WSClient(inner.config.trade_ws_url)
+                ws = Client.WSClient(inner.config.trade_ws_url, inner.config)
                 inner.ws_client = ws
                 ws.on_push =
                     (cmd, body) -> begin
@@ -182,14 +182,6 @@ end
         return ctx
     end
 
-    function disconnect!(ctx::TradeContext)
-        inner = ctx.inner
-        if !isnothing(inner.core_task) && !istaskdone(inner.core_task)
-            put!(inner.command_ch, DisconnectCmd())
-            close(inner.command_ch)
-            wait(inner.core_task)
-        end
-    end
 
     function request(ctx::TradeContext, cmd::AbstractCommand)
         put!(ctx.inner.command_ch, cmd)

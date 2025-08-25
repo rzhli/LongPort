@@ -304,8 +304,9 @@ mutable struct WSClient
     heartbeat_task::Union{Nothing, Task}
     reconnect_attempts::Int
     reconnect_task::Union{Nothing, Task}
+    config::Config.config
 
-    function WSClient(url::String)
+    function WSClient(url::String, config::Config.config)
         new(
             nothing,                # ws
             url,                    # url
@@ -317,7 +318,8 @@ mutable struct WSClient
             nothing,
             nothing,                # heartbeat_task
             0,                      # reconnect_attempts
-            nothing                 # reconnect_task
+            nothing,                # reconnect_task
+            config
         )
     end
 end
@@ -669,11 +671,15 @@ function reconnect!(client::WSClient)
     @info "尝试使用 session_id 进行快速重连..."
     try
         # 1. 物理连接
-        WebSockets.open(client.url; nagle=false, quickack=true) do ws
+        WebSockets.open(client.url; nagle = false, quickack = true) do ws
             client.ws = ws
             
             # 2. 发送 ReconnectRequest
-            reconnect_req = ControlProtocol.ReconnectRequest(client.session_id, Dict{String,String}())
+            metadata = Dict("client_version" => Constant.DEFAULT_CLIENT_VERSION)
+            if client.config.enable_overnight
+                metadata["need_over_night_quote"] = "true"
+            end
+            reconnect_req = ControlProtocol.ReconnectRequest(client.session_id, metadata)
             req_body = ControlProtocol.encode(reconnect_req)
             
             # 使用 ws_request 发送并等待响应
@@ -692,7 +698,7 @@ function reconnect!(client::WSClient)
             return true
         end
     catch e
-        @error "快速重连失败" exception=(e, catch_backtrace())
+        @error "快速重连失败" exception = (e, catch_backtrace())
         client.connected = false
         return false
     end
@@ -746,9 +752,14 @@ function create_auth_request(config::Config.config)::Vector{UInt8}
     # 获取OTP令牌用于WebSocket认证
     otp_response = get_otp(config)
     
+    metadata = Dict("client_version" => Constant.DEFAULT_CLIENT_VERSION)
+    if config.enable_overnight
+        metadata["need_over_night_quote"] = "true"
+    end
+    
     auth_req = ControlProtocol.AuthRequest(
         otp_response.otp,
-        Dict("client_version" => Constant.DEFAULT_CLIENT_VERSION) 
+        metadata
     )
     return ControlProtocol.encode(auth_req)
 end

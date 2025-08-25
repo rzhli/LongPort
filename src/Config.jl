@@ -43,7 +43,7 @@ module Config
             quote_ws_url::Union{String, Nothing} = nothing,
             trade_ws_url::Union{String, Nothing} = nothing,
             language::Language.T = Language.ZH_CN,
-            enable_overnight::Bool = false   # 美股夜盘交易行情，需订阅US LV1实时行情并开启enable_overnight参数，否则会返回null
+            enable_overnight::Bool = true   # 美股夜盘交易行情，需订阅US LV1实时行情并开启enable_overnight参数，否则会返回null
         )
             new(
                 app_key,

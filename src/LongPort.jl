@@ -31,7 +31,7 @@ module LongPort
     using .QuotePush
     using .Quote
 
-    export Quote, Trade, Config
+    export Quote, Trade, Config, disconnect!
     
            # Config 模块    Constant 模块    
     export config, Market, Currency 
@@ -70,5 +70,28 @@ module LongPort
 
     function __init__()
         @info "LongPort Julia SDK loaded (v$VERSION)"
+    end
+
+    function disconnect!(ctx::QuoteContext)
+        inner = ctx.inner
+        if !isnothing(inner.core_task) && !istaskdone(inner.core_task)
+            put!(inner.command_ch, Quote.DisconnectCmd())
+            close(inner.command_ch)
+    
+            wait(inner.core_task)
+    
+            if !isnothing(inner.push_dispatcher_task) && !istaskdone(inner.push_dispatcher_task)
+                wait(inner.push_dispatcher_task)
+            end
+        end
+    end
+
+    function disconnect!(ctx::TradeContext)
+        inner = ctx.inner
+        if !isnothing(inner.core_task) && !istaskdone(inner.core_task)
+            put!(inner.command_ch, Trade.DisconnectCmd())
+            close(inner.command_ch)
+            wait(inner.core_task)
+        end
     end
 end # module LongPort

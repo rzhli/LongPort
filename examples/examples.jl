@@ -209,7 +209,7 @@ update_watchlist_group(ctx, 10086, name = "WatchList2", securities = ["700.HK", 
 ### 获取标的列表（美股，只有中文名称name_cn）
 resp = security_list(ctx, Market.US, SecurityListCategory.Overnight)
 
-Quote.disconnect!(ctx)
+disconnect!(ctx)
 
 
 
@@ -355,3 +355,5 @@ resp = stock_positions(ctx)
 
 ### 获取保证金比例, 用于获取股票初始保证金比例、维持保证金比例、强平保证金比例
 resp = margin_ratio(ctx, "700.HK")
+
+disconnect!(ctx)

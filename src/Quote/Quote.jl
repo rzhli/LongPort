@@ -119,7 +119,7 @@ function core_run(inner::InnerQuoteContext, push_tx::Channel)
             # 1. Establish Connection or Reconnect
             if isnothing(inner.ws_client)
                 # First time connection or after a full disconnect
-                ws = WSClient(inner.config.quote_ws_url)
+                ws = WSClient(inner.config.quote_ws_url, inner.config)
                 inner.ws_client = ws
                 ws.on_push = (cmd, body) -> put!(push_tx, (cmd, body))
                 ws.auth_data = Client.create_auth_request(inner.config)
@@ -321,20 +321,6 @@ end
 @doc """
 Disconnects the WebSocket and shuts down the background actor.
 """
-function disconnect!(ctx::QuoteContext)
-    inner = ctx.inner
-    if !isnothing(inner.core_task) && !istaskdone(inner.core_task)
-        put!(inner.command_ch, DisconnectCmd())
-        close(inner.command_ch)
-
-        wait(inner.core_task)
-
-        if !isnothing(inner.push_dispatcher_task) && !istaskdone(inner.push_dispatcher_task)
-            wait(inner.push_dispatcher_task)
-        end
-        # @info "QuoteContext disconnected and cleaned up."
-    end
-end
 
 # Internal helper to send a command and wait for response
 function request(ctx::QuoteContext, cmd::AbstractCommand)
